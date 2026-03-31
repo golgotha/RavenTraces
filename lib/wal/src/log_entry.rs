@@ -1,4 +1,4 @@
-use log::{info, warn, debug, error};
+use log::{debug};
 use crate::errors::WalError;
 use crate::storage::{Readable, Writable};
 
@@ -126,7 +126,7 @@ mod tests {
     fn test_log_entry_serialized_size() {
         let header = stub_header();
         let header_size = header.serialized_size();
-        assert_eq!(header_size, 4 + 8 + 4 + 4);
+        assert_eq!(header_size, 4 + 8 + 4 + 4, "expected a log entry header 20 bytes size");
     }
 
     #[test]

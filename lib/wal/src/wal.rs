@@ -1,7 +1,7 @@
 use std::fs;
-use std::fs::{DirEntry, File};
+use std::fs::{DirEntry};
 use std::path::{Path, PathBuf};
-use log::{info, warn, error};
+use log::{info};
 use crate::errors::WalError;
 use crate::log_entry::LogEntry;
 use crate::segment::Segment;
@@ -96,12 +96,6 @@ fn open_dir_entry(entry: DirEntry) -> Result<Segment, WalError> {
         )));
     }
 
-    // let filename = entry.file_name()
-    //     .into_string()
-    //     .map_err(|_| WalError::CorruptedEntry("Wal segment filename error".into()))?;
-
-    // let splitted_name = filename.split_once("_");
-    // splitted_name.map(|s| s.1), splitted_name.map(|s| s.0)
     let segment = Segment::open(entry.path())?;
     Ok(segment)
 }
@@ -124,4 +118,175 @@ fn get_last_segment(path: &Path) -> Option<DirEntry> {
 
     // Return the last DirEntry
     segments.pop()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+    use crate::log_entry::LogEntryHeader;
+
+    fn temp_dir() -> TempDir {
+        tempfile::tempdir().expect("failed to create temp dir")
+    }
+
+    fn make_header() -> LogEntryHeader {
+        LogEntryHeader {
+            block_size: 10,
+            sequence: 1,
+            payload_size: 1024,
+            checksum: 1234,
+        }
+    }
+
+
+    fn make_entry(payload: &[u8]) -> LogEntry {
+        LogEntry {
+            header: make_header(),
+            payload: payload.to_vec()
+        }
+    }
+
+    #[test]
+    fn open_creates_directory_if_missing() {
+        let dir = temp_dir();
+        let wal_path = dir.path().join("new_wal_dir");
+        assert!(!wal_path.exists());
+
+        WAL::open(&wal_path).expect("open failed");
+
+        assert!(wal_path.exists());
+    }
+
+    #[test]
+    fn open_creates_initial_segment_when_directory_is_empty() {
+        let dir = temp_dir();
+        WAL::open(dir.path()).expect("open failed");
+
+        let wal_files: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |x| x == "wal"))
+            .collect();
+
+        assert_eq!(wal_files.len(), 1, "expected one segment file on first open");
+    }
+
+    #[test]
+    fn open_reopens_existing_segment_without_creating_new_one() {
+        let dir = temp_dir();
+        WAL::open(dir.path()).expect("first open failed");
+        WAL::open(dir.path()).expect("second open failed");
+
+        let wal_files: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |x| x == "wal"))
+            .collect();
+
+        assert_eq!(wal_files.len(), 1, "second open should reuse existing segment");
+    }
+
+    #[test]
+    fn append_single_entry_succeeds() {
+        let dir = temp_dir();
+        let mut wal = WAL::open(dir.path()).expect("open failed");
+        wal.append(&make_entry(b"hello")).expect("append failed");
+    }
+
+    #[test]
+    fn append_multiple_entries_succeeds() {
+        let dir = temp_dir();
+        let mut wal = WAL::open(dir.path()).expect("open failed");
+        for i in 0u8..10 {
+            wal.append(&make_entry(&[i; 32])).expect("append failed");
+        }
+    }
+
+    #[test]
+    fn rotation_creates_new_segment_file() {
+        let dir = temp_dir();
+        let options = WalOptions {
+            segment_capacity: 64, // tiny — forces rotation quickly
+            segment_queue_len: 0,
+        };
+        let mut wal = WAL::with_options(dir.path(), options).expect("open failed");
+
+        // Fill past the capacity threshold to trigger rotation.
+        for _ in 0..4 {
+            wal.append(&make_entry(&[0u8; 32])).expect("append failed");
+        }
+
+        let wal_files: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |x| x == "wal"))
+            .collect();
+
+        assert!(wal_files.len() > 1, "rotation should have produced a second segment");
+    }
+
+    #[test]
+    fn rotate_segment_explicitly_produces_new_file() {
+        let dir = temp_dir();
+        let mut wal = WAL::open(dir.path()).expect("open failed");
+        wal.rotate_segment().expect("rotate failed");
+
+        let wal_files: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |x| x == "wal"))
+            .collect();
+
+        assert_eq!(wal_files.len(), 2);
+    }
+
+    #[test]
+    fn after_rotation_new_segment_id_is_greater() {
+        let dir = temp_dir();
+        let mut wal = WAL::open(dir.path()).expect("open failed");
+        let id_before = wal.active_segment.header().segment_id();
+
+        wal.rotate_segment().expect("rotate failed");
+
+        let id_after = wal.active_segment.header().segment_id();
+        assert!(id_after > id_before, "segment id must increase after rotation");
+    }
+
+    #[test]
+    fn default_options_have_expected_capacity() {
+        let opts = WalOptions::default();
+        assert_eq!(opts.segment_capacity, 64 * 1024 * 1024);
+        assert_eq!(opts.segment_queue_len, 0);
+    }
+
+    #[test]
+    fn get_last_segment_returns_none_for_empty_directory() {
+        let dir = temp_dir();
+        assert!(get_last_segment(dir.path()).is_none());
+    }
+
+    #[test]
+    fn get_last_segment_returns_lexicographically_last_wal_file() {
+        let dir = temp_dir();
+        // Create two segments so there are two .wal files.
+        let mut wal = WAL::open(dir.path()).expect("open failed");
+        wal.rotate_segment().expect("rotate failed");
+
+        let last = get_last_segment(dir.path()).expect("expected a segment");
+        let name = last.file_name();
+        let name = name.to_string_lossy();
+
+        // The last file should sort highest — segment_000001.wal > segment_000000.wal
+        assert!(name.contains("000002"), "got: {}", name);
+    }
+
+    #[test]
+    fn get_last_segment_ignores_non_wal_files() {
+        let dir = temp_dir();
+        fs::write(dir.path().join("notes.txt"), b"ignore me").unwrap();
+        fs::write(dir.path().join("data.log"), b"ignore me too").unwrap();
+
+        assert!(get_last_segment(dir.path()).is_none());
+    }
 }

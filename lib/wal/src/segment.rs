@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use log::{info, warn, error};
+use log::{info};
 use crate::errors::WalError;
 use crate::storage::storage::FileStorage;
 use crate::storage::{Readable, Storage, Writable};
@@ -11,6 +11,7 @@ const SEGMENT_MAGIC: &[u8; 4] = b"RWAL";
 const SEGMENT_PREFIX: &str = "segment_";
 
 #[repr(C, packed)]
+#[derive(Debug)]
 pub struct SegmentHeader {
     magic: [u8; 4],
     version: u8,
@@ -117,6 +118,10 @@ impl Segment {
         Ok(self.size)
     }
 
+    pub fn index(&self) -> Vec<(usize, usize)> {
+        self.index.clone()
+    }
+
     fn header_size() -> usize {
         size_of::<SegmentHeader>()
     }
@@ -185,6 +190,9 @@ fn create_segment_storage<P: AsRef<Path>>(path: P, sequence: Sequence) -> Result
         .write(&header)
         .expect("Error occurred when writing to WAL");
 
+    storage.flush()
+    .expect("Error occurred when flushing WAL segment header");
+
     Ok(Segment {
         storage,
         sequence,
@@ -193,4 +201,326 @@ fn create_segment_storage<P: AsRef<Path>>(path: P, sequence: Sequence) -> Result
         size: SegmentHeader::num_bytes_to_read() as u64,
     })
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    const DEFAULT_CAPACITY: usize = 512;
+
+    fn temp_dir() -> TempDir {
+        tempfile::tempdir().expect("failed to create temp dir")
+    }
+
+    /// A minimal `Writable` test record.
+    struct TestRecord {
+        data: Vec<u8>,
+    }
+
+    impl TestRecord {
+        fn new(data: &[u8]) -> Self {
+            Self { data: data.to_vec() }
+        }
+    }
+
+    impl Writable for TestRecord {
+        fn serialize(&self) -> Vec<u8> {
+            self.data.clone()
+        }
+
+        fn serialized_size(&self) -> usize {
+            self.data.len()
+        }
+    }
+
+    mod segment_header {
+        use super::*;
+
+        fn make_header(segment_id: u32) -> SegmentHeader {
+            SegmentHeader {
+                magic: *b"RWAL",
+                version: 1,
+                segment_id,
+                created_at: 1_700_000_000_000,
+                reserved: [0u8; 39],
+            }
+        }
+
+        #[test]
+        fn is_valid_magic_returns_true_for_correct_magic() {
+            let h = make_header(1);
+            assert!(h.is_valid_magic());
+        }
+
+        #[test]
+        fn is_valid_magic_returns_false_for_wrong_magic() {
+            let h = SegmentHeader {
+                magic: *b"XWAL",
+                version: 1,
+                segment_id: 0,
+                created_at: 0,
+                reserved: [0; 39],
+            };
+            assert!(!h.is_valid_magic());
+        }
+
+        #[test]
+        fn accessors_return_correct_values() {
+            let header = make_header(42);
+            assert_eq!(header.magic(), *b"RWAL");
+            assert_eq!(header.version(), 1);
+            assert_eq!(header.segment_id(), 42);
+            assert_eq!(header.created_at(), 1_700_000_000_000);
+        }
+
+        // Serialise → deserialise round-trip.
+        #[test]
+        fn roundtrip_serialization() {
+            let header = make_header(7);
+            let bytes = header.serialize();
+            assert_eq!(bytes.len(), SegmentHeader::num_bytes_to_read());
+
+            let decoded = SegmentHeader::deserialize(&bytes).expect("deserialize failed");
+            assert_eq!(decoded.magic(), header.magic());
+            assert_eq!(decoded.version(), header.version());
+            assert_eq!(decoded.segment_id(), header.segment_id());
+            assert_eq!(decoded.created_at(), header.created_at());
+        }
+
+        #[test]
+        fn deserialize_rejects_undersized_buffer() {
+            let short = vec![0u8; 4]; // much smaller than size_of::<SegmentHeader>()
+            let result = SegmentHeader::deserialize(&short);
+            assert!(
+                matches!(result, Err(WalError::CorruptedEntry(_))),
+                "expected CorruptedEntry, got {:?}",
+                result
+            );
+        }
+
+        #[test]
+        fn serialized_size_matches_struct_size() {
+            let h = make_header(0);
+            assert_eq!(h.serialized_size(), size_of::<SegmentHeader>());
+        }
+    }
+
+    mod segment_create {
+        use super::*;
+
+        #[test]
+        fn creates_wal_segment_file_in_given_directory() {
+            let dir = temp_dir();
+            Segment::create(dir.path(), DEFAULT_CAPACITY).expect("create failed");
+
+            let wal_files: Vec<_> = fs::read_dir(dir.path())
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().map_or(false, |x| x == "wal"))
+                .collect();
+
+            assert_eq!(wal_files.len(), 1, "expected exactly one .wal file");
+        }
+
+        #[test]
+        fn new_segment_has_nonzero_size() {
+            let dir = temp_dir();
+            let seg = Segment::create(dir.path(), DEFAULT_CAPACITY).expect("create failed");
+            let size = seg.segment_size().expect("size error");
+            assert!(size > 0, "segment size should include the header");
+        }
+
+        #[test]
+        fn new_segment_size_equals_header_size() {
+            let dir = temp_dir();
+            let seg = Segment::create(dir.path(), DEFAULT_CAPACITY).expect("create failed");
+            let expected = size_of::<SegmentHeader>() as u64;
+            assert_eq!(seg.segment_size().unwrap(), expected);
+        }
+
+        #[test]
+        fn header_has_valid_magic_after_create() {
+            let dir = temp_dir();
+            let seg = Segment::create(dir.path(), DEFAULT_CAPACITY).expect("create failed");
+            assert!(seg.header().is_valid_magic());
+        }
+
+        #[test]
+        fn header_version_is_one() {
+            let dir = temp_dir();
+            let seg = Segment::create(dir.path(), DEFAULT_CAPACITY).expect("create failed");
+            assert_eq!(seg.header().version(), 1);
+        }
+    }
+
+    mod segment_open {
+        use super::*;
+
+        #[test]
+        fn open_after_create() {
+            let dir = temp_dir();
+            let created = Segment::create(dir.path(), DEFAULT_CAPACITY).expect("create failed");
+            let segment_id = created.header().segment_id();
+
+            // Find the written file and re-open it.
+            let wal_path = fs::read_dir(dir.path())
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .find(|e| e.path().extension().map_or(false, |x| x == "wal"))
+                .expect("no .wal file found")
+                .path();
+
+            let opened = Segment::open(&wal_path).expect("open failed");
+            assert_eq!(opened.header().segment_id(), segment_id);
+            assert!(opened.header().is_valid_magic());
+            assert_eq!(opened.header().version(), 1);
+        }
+
+        #[test]
+        fn open_fails_on_wrong_magic() {
+            let dir = temp_dir();
+            let path = dir.path().join("bad.wal");
+
+            // Write a file whose first 4 bytes are not "RWAL".
+            let mut data = vec![0u8; size_of::<SegmentHeader>()];
+            data[0..4].copy_from_slice(b"XXXX");
+            fs::write(&path, &data).unwrap();
+
+            let result = Segment::open(&path);
+            assert!(
+                matches!(result, Err(WalError::CorruptedEntry(_))),
+                "expected CorruptedEntry for wrong magic"
+            );
+        }
+
+        #[test]
+        fn open_fails_on_unsupported_version() {
+            let dir = temp_dir();
+            let path = dir.path().join("badver.wal");
+
+            let h = SegmentHeader {
+                magic: *b"RWAL",
+                version: 99, // unsupported
+                segment_id: 0,
+                created_at: 0,
+                reserved: [0; 39],
+            };
+            fs::write(&path, h.serialize()).unwrap();
+
+            let result = Segment::open(&path);
+            assert!(
+                matches!(result, Err(WalError::CorruptedEntry(_))),
+                "expected CorruptedEntry for unsupported version"
+            );
+        }
+
+        #[test]
+        fn open_fails_when_file_too_small() {
+            let dir = temp_dir();
+            let path = dir.path().join("tiny.wal");
+            fs::write(&path, b"RWAL").unwrap(); // only 4 bytes
+
+            let result = Segment::open(&path);
+            assert!(
+                matches!(result, Err(WalError::CorruptedEntry(_))),
+                "expected CorruptedEntry for undersized file"
+            );
+        }
+    }
+
+    mod segment_append {
+        use super::*;
+
+        #[test]
+        fn append_increases_segment_size() {
+            let dir = temp_dir();
+            let mut seg = Segment::create(dir.path(), 1024).expect("create failed");
+            let size_before = seg.segment_size().unwrap();
+
+            let record = TestRecord::new(b"hello world");
+            seg.append(&record).expect("append failed");
+
+            let size_after = seg.segment_size().unwrap();
+            assert!(size_after > size_before, "size should grow after append");
+        }
+
+        #[test]
+        fn append_multiple_records_grows_size_monotonically() {
+            let dir = temp_dir();
+            let mut seg = Segment::create(dir.path(), 4096).expect("create failed");
+
+            let mut prev = seg.segment_size().unwrap();
+            for i in 0u8..5 {
+                seg.append(&TestRecord::new(&[i; 16])).expect("append failed");
+                let curr = seg.segment_size().unwrap();
+                assert!(curr > prev, "size must strictly increase");
+                prev = curr;
+            }
+        }
+
+        #[test]
+        fn append_empty_record_does_not_error() {
+            let dir = temp_dir();
+            let mut seg = Segment::create(dir.path(), 512).expect("create failed");
+            // An empty payload is unusual but should not panic.
+            seg.append(&TestRecord::new(b"")).expect("append of empty record failed");
+        }
+    }
+
+    mod segment_rotation {
+        use super::*;
+
+        #[test]
+        fn next_segment_creates_new_wal_file() {
+            let dir = temp_dir();
+            let mut seg = Segment::create(dir.path(), 512).expect("create failed");
+            let _next = seg
+                .create_next_segment(dir.path())
+                .expect("create_next_segment failed");
+
+            let wal_files: Vec<_> = fs::read_dir(dir.path())
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().map_or(false, |x| x == "wal"))
+                .collect();
+
+            assert_eq!(wal_files.len(), 2, "there should be two .wal files after rotation");
+        }
+
+        #[test]
+        fn next_segment_has_incremented_id() {
+            let dir = temp_dir();
+            let mut seg = Segment::create(dir.path(), 512).expect("create failed");
+            let first_id = seg.header().segment_id();
+
+            let next = seg
+                .create_next_segment(dir.path())
+                .expect("create_next_segment failed");
+
+            assert!(
+                next.header().segment_id() > first_id,
+                "next segment id ({}) should be greater than first ({})",
+                next.header().segment_id(),
+                first_id
+            );
+        }
+
+        #[test]
+        fn next_segment_is_empty_initially() {
+            let dir = temp_dir();
+            let mut seg = Segment::create(dir.path(), 512).unwrap();
+            seg.append(&TestRecord::new(b"some data")).unwrap();
+
+            let next = seg.create_next_segment(dir.path()).unwrap();
+            let expected = size_of::<SegmentHeader>() as u64;
+            assert_eq!(
+                next.segment_size().unwrap(),
+                expected,
+                "fresh segment should only contain the header"
+            );
+        }
+    }
 }

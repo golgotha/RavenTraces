@@ -10,6 +10,8 @@ pub trait Storage {
     fn read<T: Readable>(&mut self) -> Result<T, WalError>;
 
     fn read_at<T: Readable>(&mut self, offset: u64) -> Result<T, WalError>;
+
+    fn flush(&mut self) -> Result<(), WalError>;
 }
 
 pub trait Writable {

@@ -1,7 +1,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write, BufWriter, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use log::{info, warn, debug, error};
+use log::{info};
 
 use crate::errors::WalError;
 use crate::storage::{Readable, Storage, Writable};
@@ -61,7 +61,7 @@ impl Storage for FileStorage {
 
     fn read<T: Readable>(&mut self) -> Result<T, WalError> {
         let mut buffer = vec![0u8; T::num_bytes_to_read()];
-        let n = self.reader.read(&mut buffer)?;
+        self.reader.read(&mut buffer)?;
         T::deserialize(&buffer)
     }
 
@@ -71,5 +71,9 @@ impl Storage for FileStorage {
         let mut buffer = vec![0u8; T::num_bytes_to_read()];
         self.reader.read_exact(&mut buffer)?;
         T::deserialize(&buffer)
+    }
+
+    fn flush(&mut self) -> Result<(), WalError> {
+        Ok(self.writer.flush()?)
     }
 }
