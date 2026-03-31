@@ -1,0 +1,23 @@
+[package]
+name = "raven-traces"
+version = "0.1.0"
+authors = [
+    "Valerii kantor <valery.kantor@gmail.com>"
+]
+edition = "2024"
+license = "Apache-2.0"
+readme = "README.md"
+
+#[lints]
+#workspace = true
+
+[dependencies]
+wal = { path = "lib/wal"}
+
+flexi_logger = "0.31"
+log = "0.4"
+
+[workspace]
+members = [
+    "lib/storage", "lib/wal",
+]
