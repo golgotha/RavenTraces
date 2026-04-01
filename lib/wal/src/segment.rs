@@ -106,6 +106,8 @@ impl Segment {
 
     pub fn append<T: Writable>(&mut self, record: &T) -> Result<(), WalError> {
         let n = self.storage.write(record)?;
+        let offset = self.size as usize;
+        self.index.push((offset, n));
         self.size += n as u64;
         Ok(())
     }

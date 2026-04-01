@@ -28,7 +28,7 @@ impl Default for WalOptions {
 pub struct WAL {
     active_segment: Segment,
     options: WalOptions,
-    path: PathBuf
+    dir: PathBuf
 }
 
 impl WAL {
@@ -60,7 +60,7 @@ impl WAL {
 
         info!("Active segment size: {}Kb", active_segment.segment_size()? / 1024);
 
-        let wal = WAL { active_segment, options, path: path.to_path_buf() };
+        let wal = WAL { active_segment, options, dir: path.to_path_buf() };
         Ok(wal)
     }
 
@@ -73,9 +73,17 @@ impl WAL {
     }
 
     pub fn rotate_segment(&mut self) -> Result<(), WalError> {
-        let segment  = self.active_segment.create_next_segment(self.path.to_path_buf())?;
+        let segment  = self.active_segment.create_next_segment(self.dir.to_path_buf())?;
         self.active_segment = segment;
         Ok(())
+    }
+
+    pub fn replay(&mut self) -> Result<Vec<LogEntry>, WalError> {
+        Ok(Vec::new())
+    }
+
+    pub fn flush(&mut self) -> Result<(), WalError> {
+        todo!("Require implementation")
     }
 
     fn should_rotate(&self, entry: &LogEntry) -> bool {
