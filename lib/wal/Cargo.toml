@@ -7,6 +7,7 @@ authors = [
 edition = "2024"
 license = "Apache-2.0"
 [dependencies]
+common = { path = "../common" }
 serde = { version = "1.0.228", features = ["derive"] }
 flexi_logger = "0.31"
 log = "0.4"

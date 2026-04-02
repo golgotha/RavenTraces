@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 use log::{info};
+use common::clock;
 use crate::errors::WalError;
 use crate::storage::storage::FileStorage;
 use crate::storage::{Readable, Storage, Writable};
@@ -175,10 +175,7 @@ fn create_segment_storage<P: AsRef<Path>>(path: P, sequence: Sequence) -> Result
     let segment_path = PathBuf::from(path.as_ref()).join(segment_name);
 
     let mut storage = FileStorage::open(segment_path)?;
-    let current_time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards")
-        .as_millis();
+    let current_time = clock::now_millis();
 
     let header = SegmentHeader {
         magic: *SEGMENT_MAGIC,

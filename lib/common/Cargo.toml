@@ -1,0 +1,10 @@
+[package]
+name = "common"
+version = "0.1.0"
+authors = [
+    "Valerii kantor <valery.kantor@gmail.com>"
+]
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
