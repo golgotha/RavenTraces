@@ -2,9 +2,10 @@ use std::fs;
 use std::fs::{DirEntry};
 use std::path::{Path, PathBuf};
 use log::{info};
+use common::clock::{now_millis, now_nanos};
 use crate::errors::WalError;
-use crate::log_entry::LogEntry;
-use crate::segment::Segment;
+use crate::log_entry::{LogEntry, LogEntryPointer};
+use crate::segment::{Segment, SegmentHeader};
 
 #[derive(Debug)]
 pub struct WalOptions {
@@ -29,6 +30,13 @@ pub struct WAL {
     active_segment: Segment,
     options: WalOptions,
     dir: PathBuf
+}
+
+pub struct AppendResult {
+    segment_id: u64,
+    offset: u64,
+    length: u32,
+    last_update: u128,
 }
 
 impl WAL {
@@ -64,12 +72,18 @@ impl WAL {
         Ok(wal)
     }
 
-    pub fn append(&mut self, entry: &LogEntry) -> Result<(), WalError> {
+    pub fn append(&mut self, entry: &LogEntry) -> Result<AppendResult, WalError> {
         if self.should_rotate(entry) {
             info!("Rotate segment");
             self.rotate_segment()?;
         }
-        self.active_segment.append(entry)
+        self.active_segment.append(entry);
+        Ok(AppendResult {
+            segment_id: self.active_segment.header().segment_id() as u64,
+            offset: self.active_segment.segment_size()?,
+            length: entry.header().block_size,
+            last_update: now_millis(),
+        })
     }
 
     pub fn rotate_segment(&mut self) -> Result<(), WalError> {
@@ -78,8 +92,22 @@ impl WAL {
         Ok(())
     }
 
-    pub fn replay(&mut self) -> Result<Vec<LogEntry>, WalError> {
-        Ok(Vec::new())
+    pub fn replay(&mut self) -> Result<Vec<LogEntryPointer>, WalError> {
+        let mut offset = Segment::header_size() as u64;
+        let segment_size = self.active_segment.segment_size()?;
+        let mut entries = Vec::new();
+
+        while offset < segment_size {
+            let log_entry : LogEntry = self.active_segment.read_log_entry(offset)?;
+            entries.push(LogEntryPointer {
+                segment_id: self.active_segment.header().segment_id() as u64,
+                offset,
+                payload: Some(log_entry.payload),
+            });
+            offset += log_entry.header.block_size as u64;
+        }
+
+        Ok(entries)
     }
 
     pub fn flush(&mut self) -> Result<(), WalError> {
@@ -91,6 +119,24 @@ impl WAL {
         let segment_size = self.active_segment.segment_size()
             .expect("WAL entry must have segment size");
         segment_size + payload_size as u64 > self.options.segment_capacity as u64
+    }
+}
+
+impl AppendResult {
+    pub fn segment_id(&self) -> u64 {
+        self.segment_id
+    }
+
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    pub fn length(&self) -> u32 {
+        self.length
+    }
+
+    pub fn last_update(&self) -> u128 {
+        self.last_update
     }
 }
 
@@ -141,7 +187,6 @@ mod tests {
     fn make_header() -> LogEntryHeader {
         LogEntryHeader {
             block_size: 10,
-            sequence: 1,
             payload_size: 1024,
             checksum: 1234,
         }

@@ -55,6 +55,7 @@ impl Storage for FileStorage {
         // println!("Write a log entry into the WAL");
         let bytes = record.serialize();
         self.writer.write_all(&bytes)?;
+        self.writer.flush()?;
         // println!("Wrote {} bytes to WAL", bytes.len());
         Ok(bytes.len())
     }
@@ -71,6 +72,14 @@ impl Storage for FileStorage {
         let mut buffer = vec![0u8; T::num_bytes_to_read()];
         self.reader.read_exact(&mut buffer)?;
         T::deserialize(&buffer)
+    }
+
+    fn read_bytes_at(&mut self, offset: u64, size: usize) -> Result<Vec<u8>, WalError> {
+        self.reader.seek(SeekFrom::Start(offset))?;
+
+        let mut buffer = vec![0u8; size];
+        self.reader.read_exact(&mut buffer)?;
+        Ok(buffer)
     }
 
     fn flush(&mut self) -> Result<(), WalError> {

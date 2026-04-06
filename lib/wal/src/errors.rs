@@ -3,8 +3,8 @@
 pub enum WalError {
     IoError(std::io::Error),
     CorruptedEntry(String),
-    StorageFull,
-    StorageClosed,
+    StorageFull(String),
+    StorageClosed(String),
     NotAFile(String)
 }
 

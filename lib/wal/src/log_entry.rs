@@ -5,7 +5,6 @@ use crate::storage::{Readable, Writable};
 #[repr(C, packed)]
 pub struct LogEntryHeader {
     pub block_size: u32,
-    pub sequence: u64,
     pub payload_size: u32,
     pub checksum: u32
 }
@@ -15,19 +14,28 @@ pub struct LogEntry {
     pub payload: Vec<u8>,
 }
 
+pub struct LogEntryPointer {
+    pub segment_id: u64,
+    pub offset: u64,
+    pub payload: Option<Vec<u8>>
+}
+
 impl LogEntry {
-    pub fn new(sequence: u64, payload: Vec<u8>) -> Self {
+    pub fn new(payload: Vec<u8>) -> Self {
         let checksum = crc32fast::hash(&payload);
         let header_size = size_of::<LogEntryHeader>();
         let payload_size = payload.len() as u32;
 
         let header = LogEntryHeader {
             block_size:   (header_size + payload_size as usize) as u32,
-            sequence,
             payload_size,
             checksum,
         };
         Self { header, payload }
+    }
+
+    pub fn header(&self) -> &LogEntryHeader {
+        &self.header
     }
 }
 
@@ -51,7 +59,6 @@ impl Writable for LogEntryHeader {
         debug!("Serializing WAL log entry header");
         let mut buf = Vec::with_capacity(self.serialized_size());
         buf.extend(&self.block_size.to_le_bytes());
-        buf.extend(&self.sequence.to_le_bytes());
         buf.extend(&self.payload_size.to_le_bytes());
         buf.extend(&self.checksum.to_le_bytes());
         buf
@@ -74,9 +81,8 @@ impl Readable for LogEntryHeader {
 
         Ok(LogEntryHeader {
             block_size: u32::from_le_bytes(buffer[0..4].try_into().expect("block_size error")),
-            sequence: u64::from_le_bytes(buffer[4..12].try_into().expect("sequence error")),
-            payload_size: u32::from_le_bytes(buffer[12..16].try_into().expect("payload_size error")),
-            checksum: u32::from_le_bytes(buffer[16..20].try_into().expect("payload_size error")),
+            payload_size: u32::from_le_bytes(buffer[4..8].try_into().expect("payload_size error")),
+            checksum: u32::from_le_bytes(buffer[8..12].try_into().expect("payload_size error")),
         })
     }
 
@@ -94,14 +100,12 @@ mod tests {
         let payload = b"Payload".to_vec();
         let test_payload_size = payload.len() as u32;
 
-        let log_entry = LogEntry::new(1, payload);
-        let sequence = log_entry.header.sequence;
+        let log_entry = LogEntry::new(payload);
         let payload_size = log_entry.header.payload_size;
 
         let total_log_entry_size = log_entry.header.serialized_size() +
             payload_size as usize;
 
-        assert_eq!(sequence, 1);
         assert_eq!(payload_size, test_payload_size);
         assert_eq!(total_log_entry_size, log_entry.header.block_size as usize);
         assert_eq!(log_entry.payload, b"Payload".to_vec());
@@ -155,7 +159,6 @@ mod tests {
     fn stub_header() -> LogEntryHeader {
         LogEntryHeader {
             block_size: 10,
-            sequence: 1,
             payload_size: 20,
             checksum: 100,
         }

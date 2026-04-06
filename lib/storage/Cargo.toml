@@ -8,4 +8,7 @@ edition = "2024"
 license = "Apache-2.0"
 
 [dependencies]
+common = { path = "../common" }
 indexmap = "2.13.0"
+log = "0.4"
+serde = { version = "1.0.228", features = ["derive"] }
