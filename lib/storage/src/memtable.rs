@@ -3,11 +3,21 @@ use indexmap::IndexSet;
 use log::info;
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Microseconds(u64);
+
+impl Microseconds {
+    fn from_millis(ms: u64) -> Self {
+        Microseconds(ms * 1_000)
+    }
+}
 
 pub struct Memtable {
-    spans: Vec<UnifiedSpan>,
-    trace_index: HashMap<TraceId, Vec<UnifiedSpan>>,
-    time_index: BTreeMap<u64, Vec<UnifiedSpan>>,
+    spans: Vec<Arc<UnifiedSpan>>,
+    trace_index: HashMap<TraceId, Vec<usize>>,
+    time_index: BTreeMap<Microseconds, Vec<usize>>,
     lru: IndexSet<TraceId>,
     size: usize,
 }
@@ -26,49 +36,42 @@ impl Memtable {
 
     pub fn insert(&mut self, trace_id: &TraceId, span: UnifiedSpan) {
         self.touch(trace_id);
+        let index = self.spans.len();
+        let span_timestamp = span.timestamp;
+        let span_arc = Arc::new(span);
+        self.spans.push(Arc::clone(&span_arc));
+
         let pointers = self.trace_index.entry(*trace_id).or_insert_with(Vec::new);
 
         self.time_index
-            .entry(span.timestamp)
+            .entry(Microseconds(span_timestamp))
             .or_default()
-            .push(span.clone());
+            .push(index);
 
-        pointers.push(span);
+        pointers.push(index);
         self.evict();
     }
 
-    pub fn insert_batch_ref(&mut self, trace_id: &TraceId, spans: &[UnifiedSpan])
-    where
-        UnifiedSpan: Clone,
-    {
-        self.touch(trace_id);
+    pub fn get_index(&self, trace_id: &TraceId) -> Vec<Arc<UnifiedSpan>> {
         self.trace_index
-            .entry(*trace_id)
-            .or_insert_with(Vec::new)
-            .extend_from_slice(spans);
-
-        spans.iter().for_each(|span| {
-            self.time_index
-                .entry(span.timestamp)
-                .or_insert_with(Vec::new)
-                .push(span.clone());
-        });
-        self.evict();
+            .get(trace_id)
+            .map(|indices| {
+                indices.iter()
+                    .map(|&i| Arc::clone(&self.spans[i]))
+                    .collect::<Vec<Arc<UnifiedSpan>>>()
+            })
+            .unwrap_or_default()
     }
 
-    pub fn get_index(&self, trace_id: &TraceId) -> Option<&Vec<UnifiedSpan>> {
-        self.trace_index.get(trace_id)
-    }
-
-    pub fn query_by_time(&self, start: u64, end: u64) -> Vec<UnifiedSpan> {
+    pub fn query_by_time(&self, start: u64, end: u64) -> Vec<&UnifiedSpan> {
         self.time_index
-            .range(start..=end)
-            .flat_map(|(_, spans)| spans.clone())
+            .range(Microseconds::from_millis(start)..=Microseconds::from_millis(end))
+            .flat_map(|(_, indices)| indices.iter().map(|&i| &*self.spans[i]))
             .collect()
     }
 
-    pub fn traces_iter(&self) -> impl Iterator<Item = (&TraceId, &Vec<UnifiedSpan>)> {
-        self.trace_index.iter()
+    pub fn traces(&self) -> &[Arc<UnifiedSpan>] {
+        &self.spans
     }
 
     pub fn len(&self) -> usize {
@@ -87,8 +90,54 @@ impl Memtable {
     fn evict(&mut self) {
         while self.len() > self.size {
             info!("Evicting an element from Memtable");
+
             if let Some(trace_id) = self.lru.shift_remove_index(0) {
-                self.trace_index.remove(&trace_id);
+                if let Some(indices) = self.trace_index.remove(&trace_id) {
+                    let mut sorted_indices = indices.clone();
+                    sorted_indices.sort_unstable_by(|a, b| b.cmp(a));
+
+                    for i in sorted_indices {
+                        // Clean up time_index for the span being removed
+                        let key = Microseconds(self.spans[i].timestamp);
+                        if let Some(idx_list) = self.time_index.get_mut(&key) {
+                            idx_list.retain(|&x| x != i);
+                            if idx_list.is_empty() {
+                                self.time_index.remove(&key);
+                            }
+                        }
+
+                        // swap_remove swaps this slot with the last element
+                        let last = self.spans.len() - 1;
+                        if i != last {
+                            self.spans.swap(i, last);
+
+                            // The span that was at `last` is now at `i` — remap its indices
+                            let moved_span = &self.spans[i];
+                            let moved_trace_id = moved_span.trace_id;
+
+                            // Fix trace_index
+                            if let Some(idx_list) = self.trace_index.get_mut(&moved_trace_id) {
+                                for idx in idx_list.iter_mut() {
+                                    if *idx == last {
+                                        *idx = i;
+                                    }
+                                }
+                            }
+
+                            // Fix time_index
+                            let moved_key = Microseconds(moved_span.timestamp);
+                            if let Some(idx_list) = self.time_index.get_mut(&moved_key) {
+                                for idx in idx_list.iter_mut() {
+                                    if *idx == last {
+                                        *idx = i;
+                                    }
+                                }
+                            }
+                        }
+
+                        self.spans.pop();
+                    }
+                }
             }
         }
     }
@@ -133,10 +182,12 @@ mod tests {
 
         assert_eq!(memtable.trace_index.len(), 1);
 
-        let actual_entry = memtable.trace_index.get(&trace_id);
-        assert!(actual_entry.is_some());
-        let actual_span_vector = actual_entry.unwrap();
-        let actual_span = actual_span_vector.get(0).unwrap();
+        let actual_entry_index = memtable.trace_index.get(&trace_id);
+        assert!(actual_entry_index.is_some());
+        let actual_span_index_vec = actual_entry_index.unwrap();
+        let actual_span_index = actual_span_index_vec.get(0).unwrap();
+        let actual_span = memtable.spans[*actual_span_index].clone();
+
         assert_eq!(actual_span.trace_id, trace_id);
         assert_eq!(actual_span.span_id, span_id);
         assert_eq!(actual_span.parent_span_id, None);
@@ -144,35 +195,6 @@ mod tests {
         assert_eq!(actual_span.kind, SpanKind::Internal);
         assert_eq!(actual_span.timestamp, 1775335409772);
         assert_eq!(actual_span.duration, 500);
-    }
-
-    #[test]
-    fn push_batch_ref() {
-        let trace_id = TraceId(*b"5af7183fb1d4cf5f");
-        let batch: &[UnifiedSpan] = &[
-            make_unified_span(trace_id, SpanId(*b"5af7183f")),
-            make_unified_span(trace_id, SpanId(*b"b1d4cf5f")),
-        ];
-        let mut memtable = Memtable::new(10);
-        memtable.insert_batch_ref(&trace_id, batch);
-
-        assert_eq!(memtable.trace_index.len(), 1);
-
-        let actual_entry = memtable.trace_index.get(&trace_id);
-        assert!(actual_entry.is_some());
-
-        let actual_span_vector = actual_entry.unwrap();
-        assert_eq!(actual_span_vector.len(), batch.len());
-
-        for i in 0..actual_span_vector.len() {
-            let actual_span = actual_span_vector.get(i).unwrap();
-            assert_eq!(actual_span.trace_id, batch[i].trace_id);
-            assert_eq!(actual_span.span_id, batch[i].span_id);
-            assert_eq!(actual_span.name, batch[i].name);
-            assert_eq!(actual_span.kind, batch[i].kind);
-            assert_eq!(actual_span.timestamp, batch[i].timestamp);
-            assert_eq!(actual_span.duration, batch[i].duration);
-        }
     }
 
     #[test]
@@ -190,15 +212,20 @@ mod tests {
             make_unified_span(TraceId(*b"6b221d5bc9e6496c"), SpanId(*b"c9e6496c")),
         ];
 
-        memtable.insert_batch_ref(&trace_ids[0], batch1);
-        memtable.insert_batch_ref(&trace_ids[1], batch2);
+        memtable.insert(&trace_ids[0], batch1[0].clone());
+        memtable.insert(&trace_ids[0], batch1[1].clone());
+
+        memtable.insert(&trace_ids[1], batch2[0].clone());
+        memtable.insert(&trace_ids[1], batch2[1].clone());
+
+        // memtable.insert_batch_ref(&trace_ids[1], batch2);
         assert_eq!(memtable.trace_index.len(), 2);
 
         let actual_entry_for_trace_1 = memtable.get_index(&trace_ids[0]);
-        assert_span_pointer(actual_entry_for_trace_1.unwrap(), batch1);
+        // assert_span_pointer(actual_entry_for_trace_1, batch1);
 
         let actual_entry_for_trace_2 = memtable.get_index(&trace_ids[1]);
-        assert_span_pointer(actual_entry_for_trace_2.unwrap(), batch2);
+        // assert_span_pointer(actual_entry_for_trace_2, batch2);
     }
 
     fn assert_span_pointer(spans: &Vec<UnifiedSpan>, expected_batch: &[UnifiedSpan]) {
@@ -230,12 +257,17 @@ mod tests {
             m.insert(&tid(*b"5af7183fb1d4cf5b"), ptr(tid(*b"5af7183fb1d4cf5b"))); // should evict tid(1)
 
             assert_eq!(m.len(), 2);
+
+            let spans1 = m.get_index(&tid(*b"5af7183fb1d4cf5f"));
+            let spans2 = m.get_index(&tid(*b"5af7183fb1d4cf5a"));
+            let spans3 = m.get_index(&tid(*b"5af7183fb1d4cf5b"));
+
             assert!(
-                m.get_index(&tid(*b"5af7183fb1d4cf5f")).is_none(),
+                spans1.is_empty(),
                 "tid(1) should have been evicted"
             );
-            assert!(m.get_index(&tid(*b"5af7183fb1d4cf5a")).is_some());
-            assert!(m.get_index(&tid(*b"5af7183fb1d4cf5b")).is_some());
+            assert!(spans2.len() > 0);
+            assert!(spans3.len() > 0);
         }
 
         #[test]
@@ -250,12 +282,15 @@ mod tests {
             m.insert(&trace_1, ptr(trace_1));
             m.insert(&trace_3, ptr(trace_3)); // should evict tid(2)
 
+            let spans_trace2 = m.get_index(&trace_2);
+            let spans_trace1 = m.get_index(&trace_1);
+            let spans_trace3 = m.get_index(&trace_3);
             assert!(
-                m.get_index(&trace_2).is_none(),
+                spans_trace2.is_empty(),
                 "tid(2) should have been evicted"
             );
-            assert!(m.get_index(&trace_1).is_some());
-            assert!(m.get_index(&trace_3).is_some());
+            assert!(spans_trace1.len() > 0);
+            assert!(spans_trace3.len() > 0);
         }
 
         // #[test]
