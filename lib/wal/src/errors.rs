@@ -5,6 +5,7 @@ pub enum WalError {
     CorruptedEntry(String),
     StorageFull(String),
     StorageClosed(String),
+    NoCheckpoint(String),
     NotAFile(String)
 }
 

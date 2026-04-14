@@ -1,4 +1,4 @@
-use log::{debug};
+use log::{trace};
 use crate::errors::WalError;
 use crate::storage::{Readable, Writable};
 
@@ -15,7 +15,7 @@ pub struct LogEntry {
 }
 
 pub struct LogEntryPointer {
-    pub segment_id: u64,
+    pub segment_id: u32,
     pub offset: u64,
     pub payload: Option<Vec<u8>>
 }
@@ -42,7 +42,7 @@ impl LogEntry {
 impl Writable for LogEntry {
 
     fn serialize(&self) -> Vec<u8> {
-        debug!("Serializing WAL log entry");
+        trace!("Serializing WAL log entry");
         let mut bytes = self.header.serialize();
         bytes.extend_from_slice(&self.payload);
         bytes
@@ -56,7 +56,7 @@ impl Writable for LogEntry {
 impl Writable for LogEntryHeader {
 
     fn serialize(&self) -> Vec<u8> {
-        debug!("Serializing WAL log entry header");
+        trace!("Serializing WAL log entry header");
         let mut buf = Vec::with_capacity(self.serialized_size());
         buf.extend(&self.block_size.to_le_bytes());
         buf.extend(&self.payload_size.to_le_bytes());
@@ -116,7 +116,7 @@ mod tests {
         let header = stub_header();
         let result_vector = header.serialize();
 
-        let mut expected = Vec::new();
+        let mut expected: Vec<u8> = Vec::new();
         expected.extend(&10u32.to_le_bytes());   // block_size
         expected.extend(&1u64.to_le_bytes());    // sequence
         expected.extend(&20u32.to_le_bytes());   // payload_size

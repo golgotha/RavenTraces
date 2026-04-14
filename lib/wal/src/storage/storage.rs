@@ -1,6 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write, BufWriter, BufReader, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::{Path};
 use log::{info};
 
 use crate::errors::WalError;
@@ -9,20 +9,20 @@ use crate::storage::{Readable, Storage, Writable};
 pub struct FileStorage {
     writer: BufWriter<File>,
     reader: BufReader<File>,
-    path: PathBuf,
     file_size: u64,
 }
 
 impl FileStorage {
 
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, WalError> {
+    pub fn open<P: AsRef<Path>>(path: P, append: bool) -> Result<Self, WalError> {
         let path_buf = path.as_ref().to_path_buf();
         info!("Opening file: {}", path_buf.display());
 
         let file = OpenOptions::new()
             .create(true)
             .read(true)
-            .append(true)
+            .write(true)
+            .append(append)
             .open(&path_buf)?;
 
         let file_size = file.metadata()?.len();
@@ -34,13 +34,24 @@ impl FileStorage {
         let writer = BufWriter::new(file);
 
         let storage = Self {
-            path: path_buf,
             writer,
             reader,
             file_size
         };
 
         Ok(storage)
+    }
+
+    pub fn exists<P: AsRef<Path>>(path: P) -> bool {
+        let path = path.as_ref();
+        path.exists()
+    }
+
+    pub fn delete<P: AsRef<Path>>(path: P) -> Result<(), WalError> {
+        let path = path.as_ref();
+        info!("Deleting segment file: {}", path.display());
+        std::fs::remove_file(path)?;
+        Ok(())
     }
 
     /// Returns the size of currently open file
