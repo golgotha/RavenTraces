@@ -5,6 +5,13 @@ pub fn read_bytes<const N: usize>(buf: &[u8], offset: &mut usize) -> [u8; N] {
     val
 }
 
+pub fn read_n_bytes(buf: &[u8], offset: &mut usize, length: usize) -> Vec<u8> {
+    let end = *offset + length;
+    let val = buf[*offset..end].to_vec();
+    *offset = end;
+    val
+}
+
 pub fn read_u8(buf: &[u8], offset: &mut usize) -> Result<u8, String> {
     if buf.len() < *offset + 1 {
         return Err("buffer too small for u8 value".into());
