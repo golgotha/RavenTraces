@@ -7,8 +7,15 @@ authors = [
 edition = "2024"
 license = "Apache-2.0"
 
+[features]
+testing = []
+
 [dependencies]
 common = { path = "../common" }
+wal = { path = "../wal"}
 indexmap = "2.13.0"
 log = "0.4"
+tempfile = "3.27.0"
 serde = { version = "1.0.228", features = ["derive"] }
+uuid        = { version = "1", features = ["v7"] }
+serde_json = "1.0.149"

@@ -1,9 +1,9 @@
-use crate::span::{TraceId, UnifiedSpan};
+use crate::span::{SizeEstimator, Span, TraceId};
 use indexmap::IndexSet;
-use log::info;
-use serde::Serialize;
+use log::{debug, info};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Microseconds(u64);
@@ -14,32 +14,75 @@ impl Microseconds {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct MemtableConfig {
+    pub max_size_bytes: usize,
+    // Pre-allocate the
+    pub initial_capacity: usize,
+}
+
+#[derive(Clone)]
+pub struct Entry {
+    span: Span,
+}
+
 pub struct Memtable {
-    spans: Vec<Arc<UnifiedSpan>>,
+    config: MemtableConfig,
+    spans: Vec<Entry>,
     trace_index: HashMap<TraceId, Vec<usize>>,
     time_index: BTreeMap<Microseconds, Vec<usize>>,
     lru: IndexSet<TraceId>,
+    min_segment_id: u32,
+    max_segment_id: u32,
     size: usize,
 }
 
 impl Memtable {
-    pub fn new(size: usize) -> Memtable {
-        info!("Create Memtable with size: {}", size);
+    pub fn new(config: MemtableConfig) -> Memtable {
+        let initial_capacity = config.initial_capacity;
+        info!("Create Memtable with size: {}", initial_capacity);
+
         Memtable {
-            spans: Vec::with_capacity(size),
+            config,
+            spans: Vec::with_capacity(initial_capacity),
             trace_index: HashMap::new(),
             time_index: BTreeMap::new(),
             lru: IndexSet::new(),
-            size,
+            min_segment_id: 0,
+            max_segment_id: 0,
+            size: 0,
         }
     }
 
-    pub fn insert(&mut self, trace_id: &TraceId, span: UnifiedSpan) {
+    pub fn next_memtable(&self) -> Memtable {
+        let initial_capacity = self.config.initial_capacity;
+        debug!("Create next Memtable version with size: {}", initial_capacity);
+
+        Memtable {
+            config: self.config.clone(),
+            spans: Vec::with_capacity(initial_capacity),
+            trace_index: HashMap::new(),
+            time_index: BTreeMap::new(),
+            lru: IndexSet::new(),
+            min_segment_id: 0,
+            max_segment_id: 0,
+            size: 0,
+        }
+    }
+
+    pub fn insert(&mut self, trace_id: &TraceId, span: Span, segment_id: u32) {
+        if self.spans.is_empty() {
+            self.min_segment_id = segment_id;
+        }
+
         self.touch(trace_id);
         let index = self.spans.len();
         let span_timestamp = span.timestamp;
-        let span_arc = Arc::new(span);
-        self.spans.push(Arc::clone(&span_arc));
+        let estimated_size = span.estimated_size_bytes();
+        let span_entry = Entry::new(span);
+
+        self.size += estimated_size;
+        self.spans.push(span_entry);
 
         let pointers = self.trace_index.entry(*trace_id).or_insert_with(Vec::new);
 
@@ -49,28 +92,32 @@ impl Memtable {
             .push(index);
 
         pointers.push(index);
-        self.evict();
+        self.max_segment_id = segment_id;
     }
 
-    pub fn get_index(&self, trace_id: &TraceId) -> Vec<Arc<UnifiedSpan>> {
-        self.trace_index
-            .get(trace_id)
-            .map(|indices| {
-                indices.iter()
-                    .map(|&i| Arc::clone(&self.spans[i]))
-                    .collect::<Vec<Arc<UnifiedSpan>>>()
-            })
-            .unwrap_or_default()
+    pub fn get_index(&self, trace_id: &TraceId) -> Option<Vec<Span>> {
+        self.trace_index.get(trace_id).map(|indices| {
+            indices
+                .iter()
+                .map(|&i| &self.spans[i])
+                .map(|entry: &Entry| entry.span.clone())
+                .collect::<Vec<Span>>()
+        })
     }
 
-    pub fn query_by_time(&self, start: u64, end: u64) -> Vec<&UnifiedSpan> {
+    pub fn query_by_time(&self, start: u64, end: u64) -> Vec<Span> {
         self.time_index
             .range(Microseconds::from_millis(start)..=Microseconds::from_millis(end))
-            .flat_map(|(_, indices)| indices.iter().map(|&i| &*self.spans[i]))
+            .flat_map(|(_, indices)| {
+                indices
+                    .iter()
+                    .map(|&i| &self.spans[i])
+                    .map(|entry: &Entry| entry.span.clone())
+            })
             .collect()
     }
 
-    pub fn traces(&self) -> &[Arc<UnifiedSpan>] {
+    pub fn entries(&self) -> &Vec<Entry> {
         &self.spans
     }
 
@@ -82,64 +129,43 @@ impl Memtable {
         self.trace_index.is_empty()
     }
 
+    pub fn clear(&mut self) {
+        self.spans.clear();
+        self.trace_index.clear();
+        self.time_index.clear();
+        self.lru.clear();
+        self.size = 0;
+    }
+
+    pub fn should_flush(&mut self) -> bool {
+        &self.size > &self.config.max_size_bytes
+    }
+
+    pub fn min_segment_id(&self) -> u32 {
+        self.min_segment_id
+    }
+
+    pub fn max_segment_id(&self) -> u32 {
+        self.max_segment_id
+    }
+
     fn touch(&mut self, trace_id: &TraceId) {
         self.lru.shift_remove(trace_id);
         self.lru.insert(*trace_id);
     }
+}
 
-    fn evict(&mut self) {
-        while self.len() > self.size {
-            info!("Evicting an element from Memtable");
+impl Entry {
+    fn new(span: Span) -> Self {
+        Entry { span }
+    }
 
-            if let Some(trace_id) = self.lru.shift_remove_index(0) {
-                if let Some(indices) = self.trace_index.remove(&trace_id) {
-                    let mut sorted_indices = indices.clone();
-                    sorted_indices.sort_unstable_by(|a, b| b.cmp(a));
+    pub fn len(&self) -> usize {
+        self.span.estimated_size_bytes()
+    }
 
-                    for i in sorted_indices {
-                        // Clean up time_index for the span being removed
-                        let key = Microseconds(self.spans[i].timestamp);
-                        if let Some(idx_list) = self.time_index.get_mut(&key) {
-                            idx_list.retain(|&x| x != i);
-                            if idx_list.is_empty() {
-                                self.time_index.remove(&key);
-                            }
-                        }
-
-                        // swap_remove swaps this slot with the last element
-                        let last = self.spans.len() - 1;
-                        if i != last {
-                            self.spans.swap(i, last);
-
-                            // The span that was at `last` is now at `i` — remap its indices
-                            let moved_span = &self.spans[i];
-                            let moved_trace_id = moved_span.trace_id;
-
-                            // Fix trace_index
-                            if let Some(idx_list) = self.trace_index.get_mut(&moved_trace_id) {
-                                for idx in idx_list.iter_mut() {
-                                    if *idx == last {
-                                        *idx = i;
-                                    }
-                                }
-                            }
-
-                            // Fix time_index
-                            let moved_key = Microseconds(moved_span.timestamp);
-                            if let Some(idx_list) = self.time_index.get_mut(&moved_key) {
-                                for idx in idx_list.iter_mut() {
-                                    if *idx == last {
-                                        *idx = i;
-                                    }
-                                }
-                            }
-                        }
-
-                        self.spans.pop();
-                    }
-                }
-            }
-        }
+    pub fn get_span(&self) -> &Span {
+        &self.span
     }
 }
 
@@ -148,8 +174,8 @@ mod tests {
     use super::*;
     use crate::span::{SpanId, SpanKind};
 
-    fn make_unified_span(trace_id: TraceId, span_id: SpanId) -> UnifiedSpan {
-        UnifiedSpan {
+    fn make_unified_span(trace_id: TraceId, span_id: SpanId) -> Span {
+        Span {
             trace_id,
             span_id,
             parent_span_id: None,
@@ -166,10 +192,18 @@ mod tests {
         }
     }
 
+    fn make_default_config() -> MemtableConfig {
+        MemtableConfig {
+            max_size_bytes: 1024,
+            initial_capacity: 10,
+        }
+    }
+
     #[test]
     fn create_memtable() {
-        let memtable = Memtable::new(10);
-        assert_eq!(memtable.size, 10)
+        let config = make_default_config();
+        let memtable = Memtable::new(config);
+        assert_eq!(memtable.config.initial_capacity, 10)
     }
 
     #[test]
@@ -177,8 +211,9 @@ mod tests {
         let trace_id: TraceId = TraceId(*b"5af7183fb1d4cf5f");
         let span_id: SpanId = SpanId(*b"5af7183f");
         let unified_span = make_unified_span(trace_id, span_id);
-        let mut memtable = Memtable::new(10);
-        memtable.insert(&trace_id, unified_span.clone());
+        let config = make_default_config();
+        let mut memtable = Memtable::new(config);
+        memtable.insert(&trace_id, unified_span.clone(), 1);
 
         assert_eq!(memtable.trace_index.len(), 1);
 
@@ -186,37 +221,39 @@ mod tests {
         assert!(actual_entry_index.is_some());
         let actual_span_index_vec = actual_entry_index.unwrap();
         let actual_span_index = actual_span_index_vec.get(0).unwrap();
-        let actual_span = memtable.spans[*actual_span_index].clone();
+        let actual_span: &Entry = &memtable.spans[*actual_span_index];
+        let actual_span_data = actual_span.span.clone();
 
-        assert_eq!(actual_span.trace_id, trace_id);
-        assert_eq!(actual_span.span_id, span_id);
-        assert_eq!(actual_span.parent_span_id, None);
-        assert_eq!(actual_span.name, "Test span");
-        assert_eq!(actual_span.kind, SpanKind::Internal);
-        assert_eq!(actual_span.timestamp, 1775335409772);
-        assert_eq!(actual_span.duration, 500);
+        assert_eq!(actual_span_data.trace_id, trace_id);
+        assert_eq!(actual_span_data.span_id, span_id);
+        assert_eq!(actual_span_data.parent_span_id, None);
+        assert_eq!(actual_span_data.name, "Test span");
+        assert_eq!(actual_span_data.kind, SpanKind::Internal);
+        assert_eq!(actual_span_data.timestamp, 1775335409772);
+        assert_eq!(actual_span_data.duration, 500);
     }
 
     #[test]
     fn get_index() {
-        let mut memtable = Memtable::new(10);
+        let config = make_default_config();
+        let mut memtable = Memtable::new(config);
         let trace_ids: [TraceId; 2] =
             [TraceId(*b"5af7183fb1d4cf5f"), TraceId(*b"6b221d5bc9e6496c")];
-        let batch1: &[UnifiedSpan] = &[
+        let batch1: &[Span] = &[
             make_unified_span(TraceId(*b"5af7183fb1d4cf5f"), SpanId(*b"5af7183f")),
             make_unified_span(TraceId(*b"5af7183fb1d4cf5f"), SpanId(*b"b1d4cf5f")),
         ];
 
-        let batch2: &[UnifiedSpan] = &[
+        let batch2: &[Span] = &[
             make_unified_span(TraceId(*b"6b221d5bc9e6496c"), SpanId(*b"6b221d5b")),
             make_unified_span(TraceId(*b"6b221d5bc9e6496c"), SpanId(*b"c9e6496c")),
         ];
 
-        memtable.insert(&trace_ids[0], batch1[0].clone());
-        memtable.insert(&trace_ids[0], batch1[1].clone());
+        memtable.insert(&trace_ids[0], batch1[0].clone(), 1);
+        memtable.insert(&trace_ids[0], batch1[1].clone(), 1);
 
-        memtable.insert(&trace_ids[1], batch2[0].clone());
-        memtable.insert(&trace_ids[1], batch2[1].clone());
+        memtable.insert(&trace_ids[1], batch2[0].clone(), 1);
+        memtable.insert(&trace_ids[1], batch2[1].clone(), 1);
 
         // memtable.insert_batch_ref(&trace_ids[1], batch2);
         assert_eq!(memtable.trace_index.len(), 2);
@@ -228,7 +265,7 @@ mod tests {
         // assert_span_pointer(actual_entry_for_trace_2, batch2);
     }
 
-    fn assert_span_pointer(spans: &Vec<UnifiedSpan>, expected_batch: &[UnifiedSpan]) {
+    fn assert_span_pointer(spans: &Vec<Span>, expected_batch: &[Span]) {
         spans.iter().enumerate().for_each(|(index, sp)| {
             assert_eq!(sp.trace_id, expected_batch[index].trace_id);
             assert_eq!(sp.span_id, expected_batch[index].span_id);
@@ -241,7 +278,7 @@ mod tests {
     mod trace_eviction {
         use super::*;
 
-        fn ptr(trace_id: TraceId) -> UnifiedSpan {
+        fn ptr(trace_id: TraceId) -> Span {
             make_unified_span(trace_id, SpanId(*b"5af7183f"))
         }
 
@@ -251,10 +288,26 @@ mod tests {
 
         #[test]
         fn evicts_oldest_when_full() {
-            let mut m = Memtable::new(2);
-            m.insert(&tid(*b"5af7183fb1d4cf5f"), ptr(tid(*b"5af7183fb1d4cf5f")));
-            m.insert(&tid(*b"5af7183fb1d4cf5a"), ptr(tid(*b"5af7183fb1d4cf5a")));
-            m.insert(&tid(*b"5af7183fb1d4cf5b"), ptr(tid(*b"5af7183fb1d4cf5b"))); // should evict tid(1)
+            let config = MemtableConfig {
+                max_size_bytes: 1024,
+                initial_capacity: 2,
+            };
+            let mut m = Memtable::new(config);
+            m.insert(
+                &tid(*b"5af7183fb1d4cf5f"),
+                ptr(tid(*b"5af7183fb1d4cf5f")),
+                1,
+            );
+            m.insert(
+                &tid(*b"5af7183fb1d4cf5a"),
+                ptr(tid(*b"5af7183fb1d4cf5a")),
+                1,
+            );
+            m.insert(
+                &tid(*b"5af7183fb1d4cf5b"),
+                ptr(tid(*b"5af7183fb1d4cf5b")),
+                1,
+            ); // should evict tid(1)
 
             assert_eq!(m.len(), 2);
 
@@ -263,11 +316,11 @@ mod tests {
             let spans3 = m.get_index(&tid(*b"5af7183fb1d4cf5b"));
 
             assert!(
-                spans1.is_empty(),
+                spans1.unwrap().is_empty(),
                 "tid(1) should have been evicted"
             );
-            assert!(spans2.len() > 0);
-            assert!(spans3.len() > 0);
+            assert!(spans2.unwrap().len() > 0);
+            assert!(spans3.unwrap().len() > 0);
         }
 
         #[test]
@@ -275,31 +328,28 @@ mod tests {
             let trace_1: TraceId = tid(*b"5af7183fb1d4cf5f");
             let trace_2: TraceId = tid(*b"5af7183fb1d4cf5a");
             let trace_3: TraceId = tid(*b"5af7183fb1d4cf5b");
-            let mut m = Memtable::new(2);
-            m.insert(&trace_1, ptr(trace_1));
-            m.insert(&trace_2, ptr(trace_2));
+            let config = MemtableConfig {
+                max_size_bytes: 1024,
+                initial_capacity: 2,
+            };
+            let mut m = Memtable::new(config);
+
+            m.insert(&trace_1, ptr(trace_1), 1);
+            m.insert(&trace_2, ptr(trace_2), 1);
             // re-touch tid(1) so tid(2) becomes the oldest
-            m.insert(&trace_1, ptr(trace_1));
-            m.insert(&trace_3, ptr(trace_3)); // should evict tid(2)
+            m.insert(&trace_1, ptr(trace_1), 1);
+            m.insert(&trace_3, ptr(trace_3), 1); // should evict tid(2)
 
             let spans_trace2 = m.get_index(&trace_2);
             let spans_trace1 = m.get_index(&trace_1);
             let spans_trace3 = m.get_index(&trace_3);
             assert!(
-                spans_trace2.is_empty(),
+                spans_trace2.unwrap().is_empty(),
                 "tid(2) should have been evicted"
             );
-            assert!(spans_trace1.len() > 0);
-            assert!(spans_trace3.len() > 0);
+            assert!(spans_trace1.unwrap().len() > 0);
+            assert!(spans_trace3.unwrap().len() > 0);
         }
 
-        // #[test]
-        // fn size_zero_means_unbounded() {
-        //     let mut m = Memtable::new(0);
-        //     for i in 0..1000 {
-        //         m.push(&tid(i), ptr(i));
-        //     }
-        //     assert_eq!(m.len(), 1000);
-        // }
     }
 }

@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
-use crate::event_attribute_reader::read_span_events;
-use crate::local_service_reader::read_local_service;
-use crate::span_attibute_reader::read_attributes;
+use uuid::Timestamp;
+use crate::readers::event_attribute_reader::read_span_events;
+use crate::readers::local_service_reader::read_local_service;
+use crate::readers::span_attibute_reader::read_attributes;
 use common::binary_readers::{read_bytes, read_string, read_u64, read_u8};
-use crate::status_code_reader::read_status_code;
-use crate::status_message_reader::read_status_message;
+use crate::readers::status_code_reader::read_status_code;
+use crate::readers::status_message_reader::read_status_message;
 
 #[derive(Debug)]
 pub enum TypeError {
@@ -21,7 +22,7 @@ pub struct TraceId(pub [u8; 16]);
 pub struct SpanId(pub [u8; 8]);
 
 #[derive(Debug, Clone)]
-pub struct UnifiedSpan {
+pub struct Span {
     pub trace_id: TraceId,
     pub span_id: SpanId,
     pub parent_span_id: Option<SpanId>,
@@ -228,7 +229,7 @@ impl SpanId {
     }
 }
 
-impl UnifiedSpan {
+impl Span {
     ///
     /// | Field                      | Size (bytes)                    | Description                                         |
     /// |----------------------------|---------------------------------|-----------------------------------------------------|
@@ -369,7 +370,7 @@ impl UnifiedSpan {
         buffer
     }
 
-    pub fn deserialize(vector: Vec<u8>) -> UnifiedSpan {
+    pub fn deserialize(vector: Vec<u8>) -> Span {
         let mut offset = 0;
         let trace_id = read_bytes::<16>(&vector, &mut offset);
         let span_id = read_bytes::<8>(&vector, &mut offset);
@@ -413,7 +414,7 @@ impl UnifiedSpan {
         let local_service = read_local_service(&vector, &mut offset)
             .expect("Unable to deserialize local_service from data storage");
 
-        UnifiedSpan {
+        Span {
             trace_id: TraceId(trace_id),
             span_id: SpanId(span_id),
             parent_span_id,
@@ -429,6 +430,110 @@ impl UnifiedSpan {
             remote_service: None,
         }
     }
+
+    pub fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+
+}
+
+pub trait SizeEstimator {
+    fn estimated_size_bytes(&self) -> usize;
+}
+
+impl SizeEstimator for Span {
+
+    fn estimated_size_bytes(&self) -> usize {
+        let mut size = 0;
+        size += size_of::<TraceId>();
+        size += size_of::<SpanId>();
+
+        if self.parent_span_id.is_some() {
+            size += size_of::<SpanId>()
+        }
+
+        size += self.name.len();
+        size += 1; //kind
+        size += size_of::<u64>(); // timestamp
+        size += size_of::<u64>();; // duration
+        size += estimated_map_size(&self.attributes);
+
+        for event in &self.events {
+            size += event.estimated_size_bytes();
+            size += 8; // approximate Vec overhead
+        }
+
+        if self.status_code.is_some() {
+            size += size_of::<u32>();
+        }
+
+        if let Some(status_message) = &self.status_message {
+            size += status_message.len();
+        }
+
+        if let Some(local_service) = &self.local_service {
+            size += local_service.len();
+        }
+
+        if let Some(remote_service) = &self.remote_service {
+            size += remote_service.len();
+        }
+
+        size
+    }
+}
+
+impl SizeEstimator for AttributeValue {
+
+    fn estimated_size_bytes(&self) -> usize {
+        match self {
+            AttributeValue::String(value) => value.len(),
+
+            AttributeValue::Int(_) => size_of::<i64>(),
+            AttributeValue::Float(_) => size_of::<f64>(),
+            AttributeValue::Bool(_) => size_of::<bool>(),
+
+            AttributeValue::StringArray(values) => {
+                values.iter().map(|v| v.len()).sum()
+            }
+
+            AttributeValue::IntArray(values) => {
+                values.len() * size_of::<i64>()
+            }
+
+            AttributeValue::FloatArray(values) => {
+                values.len() * size_of::<f64>()
+            }
+
+            AttributeValue::BoolArray(values) => {
+                values.len() * size_of::<bool>()
+            }
+        }
+    }
+}
+
+impl SizeEstimator for SpanEvent {
+
+    fn estimated_size_bytes(&self) -> usize {
+        let mut size = 0;
+        size += self.name.len();
+        size += size_of::<u64>(); // timestamp
+        size += estimated_map_size(&self.attributes);
+        size
+    }
+}
+
+fn estimated_map_size(map: &HashMap<String, AttributeValue>) -> usize {
+    let mut size = 0;
+
+    for (key, value) in map {
+        size += key.len();
+        size += value.estimated_size_bytes();
+
+        // approximate per-entry overhead for the map itself
+        size += 16;
+    }
+    size
 }
 
 #[cfg(test)]

@@ -1,8 +1,12 @@
 pub mod span;
 pub mod memtable;
-mod span_attibute_reader;
-mod event_attribute_reader;
-mod status_code_reader;
-mod status_message_reader;
-mod local_service_reader;
+pub mod sstable_writer;
+pub mod block_storage;
+pub mod errors;
+pub mod block;
+pub mod block_index;
+pub mod trace_locator;
+pub mod flush_worker;
+pub mod readers;
+pub mod corvus_engine;
 
