@@ -131,7 +131,7 @@ impl WAL {
         let mut current_segment_id = safe_segment;
         while current_segment_id < self.last_segment_id {
             current_segment_id += 1;
-            debug!("Opening segment {}", current_segment_id);
+            debug!("Opening segment={}", current_segment_id);
             let segment = self.open_segment_by_id(current_segment_id)?;
             let segment_size = segment.segment_size()?;
 
@@ -147,7 +147,7 @@ impl WAL {
             }
         }
 
-        info!("Read {} WAL entries", entries.len());
+        info!("Reading {} WAL entries completed", entries.len());
         Ok(entries)
     }
 

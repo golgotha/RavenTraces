@@ -5,6 +5,7 @@ use crate::span::Span;
 use crate::sstable_writer::SStableWriterImpl;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use log::info;
 use serde::{Deserialize, Serialize};
 use wal::log_entry::LogEntry;
 use wal::wal::WAL;
@@ -109,6 +110,7 @@ impl CorvusEngine for CorvusEngineImpl {
     }
 
     fn replay_wal(wal: &mut WAL, memtable: &mut Memtable) {
+        info!("Replaying WAL, it takes a while");
         let entries = {
             wal.replay().unwrap()
         };
