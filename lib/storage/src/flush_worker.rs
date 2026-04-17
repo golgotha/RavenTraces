@@ -39,7 +39,6 @@ impl FlushWorker for DiskFlushWorker {
         info!("Flushing memtable");
         let max_segment_id = memtable.max_segment_id();
         let mut entries = memtable.entries();
-        // spans.sort_by_key(|s| s.timestamp());
 
         let mut grouped: HashMap<TraceId, Vec<&Span>> = HashMap::new();
         for entry in entries {
