@@ -24,13 +24,12 @@ mod tests {
         let mut storage = LocalBlockStorage::new(dir_path.clone().to_path_buf());
 
         let block_id = make_block_id();
-        let block_meta = BlockMeta::new(64);
         let trace_id = TraceId::from_str("69d42ce0d381bd1be42e50d0571cc5bf").unwrap();
         let span_id = SpanId::from_str("69d42ce0d381bd1b").unwrap();
 
         let mut attributes: HashMap<String, AttributeValue> = HashMap::new();
         attributes.insert("test".to_string(), AttributeValue::String("test".to_string()));
-        let mut block = DataBlock::new(block_id.clone(), &block_meta);
+        let mut block = DataBlock::new(64 * 1024);
 
         let span = Span {
             trace_id,

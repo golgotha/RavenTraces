@@ -29,7 +29,7 @@ pub struct BlockEntry {
 pub struct BlockMeta {
     pub id: BlockId,
     #[serde(rename = "totalSpans")]
-    pub(crate) total_spans: u32,
+    total_spans: u32,
     start_ts: u64,
     end_ts: u64,
     version: u8,
@@ -141,6 +141,10 @@ impl BlockMeta {
     pub fn get_end_ts(&self) -> u64 {
         self.end_ts
     }
+
+    fn increment_spans(&mut self) {
+        self.total_spans += 1
+    }
 }
 
 impl BlockId {
@@ -155,16 +159,16 @@ impl BlockId {
 
 impl DataBlock {
 
-    pub fn new(id: BlockId, block_meta: &BlockMeta) -> Self {
+    pub fn new(max_block_size: usize) -> Self {
+        let block_meta = BlockMeta::new(max_block_size);
         DataBlock {
-            id,
+            id: block_meta.id.clone(),
             entries: Vec::new(),
-            block_meta: block_meta.clone()
+            block_meta
         }
     }
 
     pub fn add_span(&mut self, span: &[u8]) {
-        // let payload = span.serialize();
         let payload_size = span.len();
         // payload size +  the size of the size u32
         // you can not to use size_of_val to evaluate the size
@@ -172,6 +176,8 @@ impl DataBlock {
         let entry_size = payload_size + 4;
 
         self.block_meta.update_size(entry_size);
+        self.block_meta.increment_spans();
+
         let entry = BlockEntry {
             size: payload_size as u32,
             payload: Arc::from(span)
@@ -193,6 +199,10 @@ impl DataBlock {
 
     pub fn block_size(&self) -> usize {
         self.block_meta.block_size
+    }
+
+    pub fn get_block_meta(&mut self) -> &mut BlockMeta {
+        &mut self.block_meta
     }
 }
 

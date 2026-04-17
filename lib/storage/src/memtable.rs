@@ -4,6 +4,7 @@ use log::{debug, info};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
+use crate::types::MemtableConfig;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Microseconds(u64);
@@ -12,13 +13,6 @@ impl Microseconds {
     fn from_millis(ms: u64) -> Self {
         Microseconds(ms * 1_000)
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct MemtableConfig {
-    pub max_size_bytes: usize,
-    // Pre-allocate the
-    pub initial_capacity: usize,
 }
 
 #[derive(Clone)]

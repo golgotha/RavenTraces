@@ -21,12 +21,14 @@ pub enum FlushResult {
 
 pub struct DiskFlushWorker {
     table_writer: SStableWriterImpl,
+    max_block_size: usize,
 }
 
 impl DiskFlushWorker {
-    pub fn new(table_writer: SStableWriterImpl) -> Self {
+    pub fn new(table_writer: SStableWriterImpl, max_block_size: usize) -> Self {
         Self {
             table_writer,
+            max_block_size
         }
     }
 }
@@ -56,10 +58,7 @@ impl FlushWorker for DiskFlushWorker {
 
         let mut block_offset: usize = 0;
         let mut block_index = BlockIndex::new();
-
-        let mut block_metadata = BlockMeta::new(256 * 1024);
-        let mut current_block =
-            DataBlock::new(block_metadata.id.clone(), &block_metadata);
+        let mut current_block = DataBlock::new(self.max_block_size);
 
         let mut min_ts = u64::MAX;
         let mut max_ts = 0;
@@ -102,20 +101,21 @@ impl FlushWorker for DiskFlushWorker {
             block_offset = block_size;
 
             if current_block.is_full() {
-                block_metadata.set_start_ts(min_ts);
-                block_metadata.set_end_ts(max_ts);
+                {
+                    let meta = current_block.get_block_meta();
+                    meta.set_start_ts(min_ts);
+                    meta.set_end_ts(max_ts);
+                }
 
                 self.table_writer
                     .write_block(&current_block)
                     .expect("Error while writing a block");
 
                 self.table_writer
-                    .flush_index(&block_metadata, &block_index)
+                    .flush_index(current_block.get_block_meta(), &block_index)
                     .expect("Error while flushing index");
 
-                block_metadata = BlockMeta::new(256 * 1024);
-                current_block =
-                    DataBlock::new(block_metadata.id.clone(), &block_metadata);
+                current_block = DataBlock::new(self.max_block_size);
                 block_index = BlockIndex::new();
                 block_offset = 0;
                 min_ts = 0;
@@ -123,18 +123,24 @@ impl FlushWorker for DiskFlushWorker {
             }
         }
 
+        {
+            let meta = current_block.get_block_meta();
+            meta.set_start_ts(min_ts);
+            meta.set_end_ts(max_ts);
+        }
+
         self.table_writer
             .write_block(&current_block)
             .expect("Error while writing a block");
 
         self.table_writer
-            .flush_index(&block_metadata, &block_index)
+            .flush_index(current_block.get_block_meta(), &block_index)
             .expect("Error while flushing index");
 
         wal.checkpoint(max_segment_id)
             .expect("cannot checkpoint out WAL");
         memtable.clear();
-        wal.cleanup().expect("Error occurred during WAL cleanup");
+        // wal.cleanup().expect("Error occurred during WAL cleanup");
         Ok(())
     }
 }

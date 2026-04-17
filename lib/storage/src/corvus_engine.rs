@@ -1,6 +1,6 @@
 use crate::errors::EngineError;
 use crate::flush_worker::{DiskFlushWorker, FlushWorker};
-use crate::memtable::{Memtable, MemtableConfig};
+use crate::memtable::Memtable;
 use crate::span::Span;
 use crate::sstable_writer::SStableWriterImpl;
 use std::path::{Path, PathBuf};
@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use wal::log_entry::LogEntry;
 use wal::wal::WAL;
+use crate::types::{MemtableConfig, StorageConfig};
 
 pub trait CorvusEngine: Send + Sync {
 
@@ -18,9 +19,9 @@ pub trait CorvusEngine: Send + Sync {
     fn replay_wal(wal: &mut WAL, memtable: &mut Memtable);
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorvusEngineConfig {
-    pub memtable_config: MemtableConfig
+    pub mem_table_config: MemtableConfig
 }
 
 pub struct CorvusEngineImpl {
@@ -38,16 +39,17 @@ impl CorvusEngineImpl {
 }
 
 impl CorvusEngineImpl {
-    pub fn new(base_dir: PathBuf, config: CorvusEngineConfig) -> Self {
-        let memtable_config = config.memtable_config.clone();
-        let memtable = Memtable::new(memtable_config);
+    pub fn new(base_dir: PathBuf, config: StorageConfig) -> Self {
+        let mem_table_config = config.mem_table.clone();
+        let max_block_size = config.max_block_size.clone();
+        let memtable = Memtable::new(mem_table_config.clone());
 
         let wal_dir_path = Path::new(&base_dir);
         let wal = WAL::open(wal_dir_path).
             expect("could not open traces.wal");
 
         let stable_writer = SStableWriterImpl::new(Path::new(&base_dir).to_path_buf());
-        let flush_worker = Box::new(DiskFlushWorker::new(stable_writer));
+        let flush_worker = Box::new(DiskFlushWorker::new(stable_writer, max_block_size));
 
         let engine_state = CorvusEngineState {
             wal,
@@ -57,7 +59,9 @@ impl CorvusEngineImpl {
 
         Self {
             inner: Arc::new(Mutex::new(engine_state)),
-            config,
+            config: CorvusEngineConfig {
+                mem_table_config
+            },
         }
     }
 }
@@ -95,7 +99,7 @@ impl CorvusEngine for CorvusEngineImpl {
         }
 
         if memtable.should_flush() {
-            let mut old_memtable = std::mem::replace(&mut *memtable, Memtable::new(self.config.memtable_config.clone()));
+            let mut old_memtable = std::mem::replace(&mut *memtable, Memtable::new(self.config.mem_table_config.clone()));
             flush_worker
                 .flush(wal, &mut old_memtable)
                 .expect("cannot flush memtable");

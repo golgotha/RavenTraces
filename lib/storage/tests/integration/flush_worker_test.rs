@@ -7,13 +7,11 @@ mod tests {
     use common::binary_readers::{read_n_bytes, read_u32};
     use storage::block_storage::{BlockStorage, LocalBlockStorage};
     use storage::flush_worker::{DiskFlushWorker, FlushWorker};
-    use storage::memtable::{Memtable, MemtableConfig};
-    use storage::span::{AttributeValue, SpanId, SpanKind, TraceId, Span};
+    use storage::memtable::Memtable;
+    use storage::span::{AttributeValue, Span, SpanId, SpanKind, TraceId};
     use storage::sstable_writer::SStableWriterImpl;
+    use storage::types::MemtableConfig;
     use wal::wal::WAL;
-    use super::*;
-
-
     fn temp_dir() -> TempDir {
         tempfile::tempdir().expect("failed to create temp dir")
     }
@@ -49,7 +47,7 @@ mod tests {
         // memtable.insert(&trace_id_2, span_3, 1);
 
         let table_writer = SStableWriterImpl::new(dir_path.to_path_buf());
-        let mut flusher = DiskFlushWorker::new(table_writer);
+        let mut flusher = DiskFlushWorker::new(table_writer, 64 * 1024);
         let flusher_result = flusher.flush(&mut wal, &mut memtable);
         assert!(flusher_result.is_ok());
 

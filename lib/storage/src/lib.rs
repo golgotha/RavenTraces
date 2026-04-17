@@ -9,4 +9,5 @@ pub mod trace_locator;
 pub mod flush_worker;
 pub mod readers;
 pub mod corvus_engine;
+pub mod types;
 
