@@ -2,7 +2,8 @@ use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use common::serialization::Writable;
+use common::binary_readers::read_u32;
+use common::serialization::{Readable, Writable};
 use crate::span::{TraceId};
 
 const DEFAULT_VERSION: u8 = 1;
@@ -49,6 +50,46 @@ pub struct BlockIdBuilder {
     trace_id: Option<TraceId>,
     start_ts: Option<u64>,
     end_ts: Option<u64>,
+}
+
+#[derive(Debug, Default)]
+pub struct DataBlockBuilder {
+    id: Option<BlockId>,
+    entries: Vec<BlockEntry>,
+    block_meta: Option<BlockMeta>
+}
+
+impl DataBlockBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn block_id(mut self, id: BlockId) -> Self {
+        self.id = Some(id);
+        self
+    }
+
+    pub fn block_meta(mut self, meta: BlockMeta) -> Self {
+        self.block_meta = Some(meta);
+        self
+    }
+
+    pub fn add_entry(mut self, entry: BlockEntry) -> Self {
+        self.entries.push(entry);
+        self
+    }
+
+    pub fn build(self) -> DataBlock {
+        let block_id = self.id.unwrap();
+        let entries = self.entries;
+        let block_meta = self.block_meta.unwrap_or(BlockMeta::new(2));
+
+        DataBlock {
+            id: block_id,
+            entries,
+            block_meta
+        }
+    }
 }
 
 impl BlockIdBuilder {
@@ -226,6 +267,22 @@ impl Writable for BlockEntry {
         buf.extend(&self.size.to_le_bytes());
         buf.extend_from_slice(&self.payload);
         buf
+    }
+}
+
+impl Readable for BlockEntry {
+    fn deserialize(buffer: &[u8]) -> Result<Self, String>
+    where
+        Self: Sized
+    {
+        let mut offset = 0;
+        let size = read_u32(buffer, &mut offset)?;
+        let payload = &buffer[offset..];
+
+        Ok(BlockEntry {
+            size,
+            payload: Arc::from(payload),
+        })
     }
 }
 

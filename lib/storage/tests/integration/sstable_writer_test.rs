@@ -1,13 +1,12 @@
 
 #[cfg(test)]
 mod tests {
-    // use rand::RngExt;
 
     use std::collections::HashMap;
     use std::path::Path;
     use std::sync::Arc;
     use common::binary_readers::{read_n_bytes, read_u32};
-    use storage::block::{BlockEntry, BlockId, BlockMeta, DataBlock};
+    use storage::block::{BlockId, DataBlock};
     use storage::block_storage::{BlockStorage, LocalBlockStorage};
     use storage::span::{AttributeValue, SpanId, SpanKind, TraceId, Span};
     use storage::sstable_writer::{SStableWriter, SStableWriterImpl};
@@ -52,7 +51,7 @@ mod tests {
             .unwrap();
         assert!(n_bytes > 0);
 
-        let block_data = storage.read_block(&block_id, 0, n_bytes as u32);
+        let block_data = storage.read_block_at(&block_id, 0, n_bytes as u32);
         assert!(block_data.is_ok());
         let block_data = block_data.unwrap();
         assert_eq!(block_data.len(), n_bytes);

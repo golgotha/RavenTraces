@@ -12,6 +12,7 @@ mod tests {
     use storage::sstable_writer::SStableWriterImpl;
     use storage::types::MemtableConfig;
     use wal::wal::WAL;
+    
     fn temp_dir() -> TempDir {
         tempfile::tempdir().expect("failed to create temp dir")
     }
@@ -65,7 +66,7 @@ mod tests {
         for entry in index_entries {
             let offset = entry.offset();
             let length = entry.length();
-            let block_result = storage.read_block(&block_id, offset, length);
+            let block_result = storage.read_block_at(&block_id, offset, length);
             assert!(block_result.is_ok());
             let block_data = block_result.unwrap();
             let spans: Vec<Span> = read_block_entries(&block_data);

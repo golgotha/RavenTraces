@@ -17,7 +17,7 @@ const META_FILE_NAME: &str = "meta.json";
 
 pub trait BlockStorage: Send + Sync {
 
-    fn open(&mut self, id: BlockId) -> Result<(), StorageError>;
+    fn open(&mut self, id: &BlockId) -> Result<(), StorageError>;
 
     fn write_block(&self, id: &BlockId, data: &[u8]) -> Result<(), StorageError>;
 
@@ -25,7 +25,9 @@ pub trait BlockStorage: Send + Sync {
 
     fn write_block_meta(&self, block_id: &BlockId, block_meta: &BlockMeta) -> Result<(), StorageError>;
 
-    fn read_block(&self, block_id: &BlockId, offset: u64, size: u32) -> Result<Vec<u8>, StorageError>;
+    fn read_block_at(&self, block_id: &BlockId, offset: u64, size: u32) -> Result<Vec<u8>, StorageError>;
+
+    fn read_block(&self, block_id: &BlockId) -> Result<Vec<u8>, StorageError>;
 
     fn read_block_index(&self, id: &BlockId) -> Result<BlockIndex, StorageError>;
 
@@ -89,7 +91,7 @@ impl LocalBlockStorage {
 
 impl BlockStorage for LocalBlockStorage {
 
-    fn open(&mut self, id: BlockId) -> Result<(), StorageError> {
+    fn open(&mut self, id: &BlockId) -> Result<(), StorageError> {
         let block_dir_path = self.base_dir
             .join(BLOCKS_DIR_NAME)
             .join(id.to_string());
@@ -125,7 +127,7 @@ impl BlockStorage for LocalBlockStorage {
 
     fn write_block_index(&self, block_id: &BlockId, index: &BlockIndex) -> Result<(), StorageError> {
         info!("Writing block index for id {}", block_id.id.to_string());
-        let guard = self.mutex.lock().unwrap();
+        let _guard = self.mutex.lock().unwrap();
 
         let data_vec: Vec<u8> = index.entries()
             .iter()
@@ -168,7 +170,7 @@ impl BlockStorage for LocalBlockStorage {
         Ok(())
     }
 
-    fn read_block(&self, block_id: &BlockId, offset: u64, size: u32) -> Result<Vec<u8>, StorageError> {
+    fn read_block_at(&self, block_id: &BlockId, offset: u64, size: u32) -> Result<Vec<u8>, StorageError> {
         let block_path = self.base_dir
             .join(BLOCKS_DIR_NAME)
             .join(block_id.id.to_string())
@@ -186,6 +188,25 @@ impl BlockStorage for LocalBlockStorage {
         let mut file = File::open(&block_path)?;
         let mut buffer= vec![0u8; size as usize];
         file.seek(SeekFrom::Start(offset))?;
+        file.read_exact(&mut buffer)?;
+        Ok(buffer)
+    }
+
+    fn read_block(&self, block_id: &BlockId) -> Result<Vec<u8>, StorageError> {
+        let block_path = self.base_dir
+            .join(BLOCKS_DIR_NAME)
+            .join(block_id.id.to_string())
+            .join(BLOCK_DATA_FILE_NAME);
+
+        if !block_path.exists() {
+            return Err(StorageError::NotFound(format!("Block {} doesn't exist", block_id.id.to_string()).into()));
+        }
+
+        let block_file_size = block_path.metadata()?.len();
+
+        let mut file = File::open(&block_path)?;
+        let mut buffer= vec![0u8; block_file_size as usize];
+        file.seek(SeekFrom::Start(0))?;
         file.read_exact(&mut buffer)?;
         Ok(buffer)
     }

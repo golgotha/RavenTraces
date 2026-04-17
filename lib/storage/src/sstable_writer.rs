@@ -27,7 +27,7 @@ impl SStableWriterImpl {
 
     fn open_block(&mut self, block_id: &BlockId) -> Result<(), StorageError> {
         info!("Creating a new block file: {}", block_id.to_string());
-        self.storage.open(block_id.clone())?;
+        self.storage.open(block_id)?;
         Ok(())
     }
 
@@ -36,7 +36,7 @@ impl SStableWriterImpl {
 
         let block_id = block_metadata.id.clone();
         info!("Creating a new block file: {}", block_id.to_string());
-        self.storage.open(block_id)?;
+        self.storage.open(&block_id)?;
         Ok(block_metadata)
     }
 }
