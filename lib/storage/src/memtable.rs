@@ -24,7 +24,7 @@ pub struct Memtable {
     trace_index: HashMap<TraceId, Vec<usize>>,
     time_index: BTreeMap<Microseconds, Vec<usize>>,
     lru: IndexSet<TraceId>,
-    services: IndexSet<String>,
+    services: HashMap<String, Vec<usize>>,
     min_segment_id: u32,
     max_segment_id: u32,
     size: usize,
@@ -41,7 +41,7 @@ impl Memtable {
             trace_index: HashMap::new(),
             time_index: BTreeMap::new(),
             lru: IndexSet::new(),
-            services: IndexSet::new(),
+            services: HashMap::new(),
             min_segment_id: 0,
             max_segment_id: 0,
             size: 0,
@@ -63,11 +63,6 @@ impl Memtable {
         let index = self.spans.len();
         let span_timestamp = span.timestamp;
         let estimated_size = span.estimated_size_bytes();
-
-        let local_service = span.local_service.clone();
-        let service_name = if local_service.is_some() {local_service.unwrap()} else { "Unknown".to_string() };
-        self.services.insert(service_name);
-
         let span_entry = Entry::new(span.clone());
 
         self.size += estimated_size;
@@ -81,6 +76,12 @@ impl Memtable {
             .push(index);
 
         pointers.push(index);
+
+        let local_service = span.local_service.clone();
+        let service_name = if local_service.is_some() {local_service.unwrap()} else { "Unknown".to_string() };
+        self.services.entry(service_name)
+            .or_insert_with(Vec::new)
+            .push(index);
         self.max_segment_id = segment_id;
     }
 
@@ -106,6 +107,16 @@ impl Memtable {
             .collect()
     }
 
+    pub fn get_spans_by_service(&self, service: &str) -> Option<Vec<Span>> {
+        self.services.get(service).map(|indices| {
+            indices
+                .iter()
+                .map(|&i| &self.spans[i])
+                .map(|entry: &Entry| entry.span.clone())
+                .collect::<Vec<Span>>()
+        })
+    }
+
     pub fn entries(&self) -> &Vec<Entry> {
         &self.spans
     }
@@ -122,6 +133,7 @@ impl Memtable {
         self.spans.clear();
         self.trace_index.clear();
         self.time_index.clear();
+        self.services.clear();
         self.lru.clear();
         self.size = 0;
     }
@@ -139,8 +151,7 @@ impl Memtable {
     }
 
     pub fn services(&self) -> Vec<String> {
-        info!("Services len: {}", self.services.len());
-        self.services.iter().cloned().collect::<Vec<String>>()
+        self.services.keys().cloned().collect::<Vec<String>>()
     }
 
     fn touch(&mut self, trace_id: &TraceId) {
