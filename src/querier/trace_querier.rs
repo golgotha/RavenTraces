@@ -90,30 +90,31 @@ impl TraceQuerier {
         let mut spans_result: Vec<Span> = Vec::new();
         let service_name = search_request.service_name.clone();
         let span_name = search_request.span_name.clone();
+        let limit = search_request.limit;
 
         let spans = match (&service_name) {
             Some(service_name) => self.mem_table
                 .read()
                 .unwrap()
-                .get_spans_by_service(&service_name)
+                .get_spans_by_service(&service_name, limit.unwrap_or(usize::MAX))
                 .unwrap_or_default(),
             None =>  self.mem_table
                 .read()
                 .unwrap()
                 .entries()
                 .iter()
-                .map(|entry: &Entry| entry.get_span().clone())
+                .map(|entry: &Entry| entry.get_span())
+                .take(limit.unwrap_or(usize::MAX))
+                .cloned()
                 .collect()
         };
 
-        let limit = search_request.limit;
         let spans = spans
             .into_iter()
             .filter(|span| match &span_name {
                 Some(name) => span.name == name.as_str(),
                 None => true,
             })
-            .take(limit.unwrap_or(usize::MAX))
             .collect::<Vec<Span>>();
 
         spans_result.extend(spans);

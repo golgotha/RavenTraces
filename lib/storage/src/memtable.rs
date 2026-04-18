@@ -107,12 +107,14 @@ impl Memtable {
             .collect()
     }
 
-    pub fn get_spans_by_service(&self, service: &str) -> Option<Vec<Span>> {
+    pub fn get_spans_by_service(&self, service: &str, limit: usize) -> Option<Vec<Span>> {
         self.services.get(service).map(|indices| {
             indices
                 .iter()
                 .map(|&i| &self.spans[i])
-                .map(|entry: &Entry| entry.span.clone())
+                .map(|entry: &Entry| &entry.span)
+                .take(limit)
+                .cloned()
                 .collect::<Vec<Span>>()
         })
     }
