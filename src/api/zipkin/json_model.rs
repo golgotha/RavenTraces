@@ -57,7 +57,7 @@ pub struct ZipkinTraceQuery {
 #[derive(Deserialize)]
 pub struct ZipkinSpansQuery {
     #[serde(rename = "serviceName")]
-    pub service_name: Option<String>,
+    pub service_name: String,
 }
 
 impl From<&ZipkinSpan> for Span {

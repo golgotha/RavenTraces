@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use crate::settings::Settings;
 use crate::api::zipkin::zipkin_api::{post_zipkin_span, get_zipkin_services,
                                      get_zipkin_spans, get_zipkin_trace, get_zipkin_traces};
+use crate::querier::zipkin_querier::ZipkinQuerier;
 
 pub mod models;
 
@@ -32,7 +33,7 @@ async fn health() -> HttpResponse {
 pub fn init(
     settings: &Settings,
     distributor: Mutex<Distributor>,
-    querier: Mutex<Querier>,
+    querier: Mutex<ZipkinQuerier>,
 ) -> io::Result<()> {
     let host = &settings.service.host;
     let port = &settings.service.http_port;

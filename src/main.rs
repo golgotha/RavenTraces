@@ -20,6 +20,7 @@ use storage::corvus_engine::CorvusEngineImpl;
 use storage::corvus_engine::{CorvusEngine, CorvusEngineConfig};
 use storage::memtable::Memtable;
 use storage::types::MemtableConfig;
+use crate::querier::zipkin_querier::ZipkinQuerier;
 
 fn main() {
     let settings = &Settings::default();
@@ -54,7 +55,7 @@ fn main() {
     let ingester = LocalIngester::new(corvus_engine_arc);
 
     let distributor = Distributor::new(ingester);
-    let querier = Querier::new(trace_querier);
+    let querier = ZipkinQuerier::new(trace_querier);
     let distributor_mutex = Mutex::new(distributor);
     let querier_mutex = Mutex::new(querier);
 
