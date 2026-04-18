@@ -43,7 +43,7 @@ mod tests {
         let span_2 = make_span(trace_id_1, span_id_2);
         let span_3 = make_span(trace_id_2, span_id_3);
 
-        memtable.insert(&trace_id_1, span_1, 1);
+        memtable.insert(&trace_id_1, &span_1, 1);
         // memtable.insert(&trace_id_1, span_2, 1);
         // memtable.insert(&trace_id_2, span_3, 1);
 

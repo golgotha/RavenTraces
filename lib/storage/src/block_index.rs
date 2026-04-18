@@ -1,4 +1,3 @@
-use crate::block::BlockId;
 use crate::span::TraceId;
 use common::binary_readers::{read_bytes, read_u32, read_u64};
 use common::serialization::{Readable, Writable};

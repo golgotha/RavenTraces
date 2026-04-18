@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use log::info;
 use common::serialization::Writable;
-use crate::block::{BlockId, BlockMeta, DataBlock};
+use crate::block::{BlockId, BlockMeta, DataBlock, StorageMeta};
 use crate::block_index::BlockIndex;
 use crate::block_storage::{BlockStorage, LocalBlockStorage};
 use crate::errors::StorageError;
@@ -28,6 +28,11 @@ impl SStableWriterImpl {
     fn open_block(&mut self, block_id: &BlockId) -> Result<(), StorageError> {
         info!("Creating a new block file: {}", block_id.to_string());
         self.storage.open(block_id)?;
+        let mut storage_meta = StorageMeta {
+            blocks: Vec::new(),
+        };
+        storage_meta.blocks.push(block_id.to_string());
+        self.storage.write_storage_meta(&storage_meta)?;
         Ok(())
     }
 
@@ -56,6 +61,11 @@ impl SStableWriter for SStableWriterImpl {
                 self.storage.write_block(block_id, &block_data).expect("Error occurred while writing a block");
             });
 
+        let mut storage_meta = self.storage.read_storage_meta()
+            .expect("Error occurred while reading storage meta while writing a block");
+
+        storage_meta.blocks.push(block_id.to_string());
+        // self.storage.write_storage_meta()?;
         Ok(written_bytes)
     }
 

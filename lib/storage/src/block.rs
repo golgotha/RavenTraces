@@ -45,6 +45,12 @@ pub struct BlockMeta {
     open: bool
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StorageMeta {
+    #[serde(rename = "blocks")]
+    pub blocks: Vec<String>,
+}
+
 #[derive(Debug, Default)]
 pub struct BlockIdBuilder {
     trace_id: Option<TraceId>,

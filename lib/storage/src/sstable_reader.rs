@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use common::binary_readers::{read_n_bytes, read_u32};
 use common::serialization::Readable;
-use crate::block::{BlockEntry, BlockId, DataBlock, DataBlockBuilder};
+use crate::block::{BlockEntry, BlockId, DataBlock, DataBlockBuilder, StorageMeta};
 use crate::block_index::BlockIndex;
 use crate::block_storage::{BlockStorage, LocalBlockStorage};
 use crate::errors::StorageError;
@@ -15,6 +15,7 @@ pub trait SStableReader {
 
     fn read_block_index(&self, block_id: &BlockId) -> Result<BlockIndex, StorageError>;
 
+    fn read_blocks_meta(&self) -> Result<StorageMeta, StorageError>;
 }
 
 pub struct SStableReaderImpl {
@@ -65,5 +66,10 @@ impl SStableReader for SStableReaderImpl {
 
     fn read_block_index(&self, block_id: &BlockId) -> Result<BlockIndex, StorageError> {
         self.storage.read_block_index(block_id)
+    }
+
+    fn read_blocks_meta(&self) -> Result<StorageMeta, StorageError> {
+        let meta = self.storage.read_storage_meta()?;
+        Ok(meta)
     }
 }

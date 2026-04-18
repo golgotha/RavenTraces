@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::fmt::Display;
 use std::str::FromStr;
 use uuid::Timestamp;
 use crate::readers::event_attribute_reader::read_span_events;
@@ -66,7 +67,7 @@ pub struct SpanEvent {
     pub attributes: HashMap<String, AttributeValue>,
 }
 
-impl fmt::Display for SpanKind {
+impl Display for SpanKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
             SpanKind::Internal => "INTERNAL",
@@ -189,6 +190,13 @@ impl TraceId {
     }
 }
 
+impl Display for TraceId {
+
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.to_hex())
+    }
+}
+
 impl SpanId {
     pub fn as_bytes(&self) -> &[u8; 8] {
         &self.0
@@ -226,6 +234,13 @@ impl SpanId {
         }
 
         unsafe { String::from_utf8_unchecked(out) }
+    }
+}
+
+impl Display for SpanId {
+
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.to_hex())
     }
 }
 

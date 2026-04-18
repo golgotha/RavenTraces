@@ -2,8 +2,6 @@ use crate::span::{SizeEstimator, Span, TraceId};
 use indexmap::IndexSet;
 use log::{debug, info};
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
-use serde::{Deserialize, Serialize};
 use crate::types::MemtableConfig;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -26,6 +24,7 @@ pub struct Memtable {
     trace_index: HashMap<TraceId, Vec<usize>>,
     time_index: BTreeMap<Microseconds, Vec<usize>>,
     lru: IndexSet<TraceId>,
+    services: IndexSet<String>,
     min_segment_id: u32,
     max_segment_id: u32,
     size: usize,
@@ -42,6 +41,7 @@ impl Memtable {
             trace_index: HashMap::new(),
             time_index: BTreeMap::new(),
             lru: IndexSet::new(),
+            services: IndexSet::new(),
             min_segment_id: 0,
             max_segment_id: 0,
             size: 0,
@@ -51,20 +51,10 @@ impl Memtable {
     pub fn next_memtable(&self) -> Memtable {
         let initial_capacity = self.config.initial_capacity;
         debug!("Create next Memtable version with size: {}", initial_capacity);
-
-        Memtable {
-            config: self.config.clone(),
-            spans: Vec::with_capacity(initial_capacity),
-            trace_index: HashMap::new(),
-            time_index: BTreeMap::new(),
-            lru: IndexSet::new(),
-            min_segment_id: 0,
-            max_segment_id: 0,
-            size: 0,
-        }
+        Memtable::new(self.config.clone())
     }
 
-    pub fn insert(&mut self, trace_id: &TraceId, span: Span, segment_id: u32) {
+    pub fn insert(&mut self, trace_id: &TraceId, span: &Span, segment_id: u32) {
         if self.spans.is_empty() {
             self.min_segment_id = segment_id;
         }
@@ -73,7 +63,12 @@ impl Memtable {
         let index = self.spans.len();
         let span_timestamp = span.timestamp;
         let estimated_size = span.estimated_size_bytes();
-        let span_entry = Entry::new(span);
+
+        let local_service = span.local_service.clone();
+        let service_name = if local_service.is_some() {local_service.unwrap()} else { "Unknown".to_string() };
+        self.services.insert(service_name);
+
+        let span_entry = Entry::new(span.clone());
 
         self.size += estimated_size;
         self.spans.push(span_entry);
@@ -143,6 +138,11 @@ impl Memtable {
         self.max_segment_id
     }
 
+    pub fn services(&self) -> Vec<String> {
+        info!("Services len: {}", self.services.len());
+        self.services.iter().cloned().collect::<Vec<String>>()
+    }
+
     fn touch(&mut self, trace_id: &TraceId) {
         self.lru.shift_remove(trace_id);
         self.lru.insert(*trace_id);
@@ -207,7 +207,7 @@ mod tests {
         let unified_span = make_unified_span(trace_id, span_id);
         let config = make_default_config();
         let mut memtable = Memtable::new(config);
-        memtable.insert(&trace_id, unified_span.clone(), 1);
+        memtable.insert(&trace_id, &unified_span, 1);
 
         assert_eq!(memtable.trace_index.len(), 1);
 
@@ -243,11 +243,11 @@ mod tests {
             make_unified_span(TraceId(*b"6b221d5bc9e6496c"), SpanId(*b"c9e6496c")),
         ];
 
-        memtable.insert(&trace_ids[0], batch1[0].clone(), 1);
-        memtable.insert(&trace_ids[0], batch1[1].clone(), 1);
+        memtable.insert(&trace_ids[0], &batch1[0], 1);
+        memtable.insert(&trace_ids[0], &batch1[1], 1);
 
-        memtable.insert(&trace_ids[1], batch2[0].clone(), 1);
-        memtable.insert(&trace_ids[1], batch2[1].clone(), 1);
+        memtable.insert(&trace_ids[1], &batch2[0], 1);
+        memtable.insert(&trace_ids[1], &batch2[1], 1);
 
         // memtable.insert_batch_ref(&trace_ids[1], batch2);
         assert_eq!(memtable.trace_index.len(), 2);
@@ -289,17 +289,17 @@ mod tests {
             let mut m = Memtable::new(config);
             m.insert(
                 &tid(*b"5af7183fb1d4cf5f"),
-                ptr(tid(*b"5af7183fb1d4cf5f")),
+                &ptr(tid(*b"5af7183fb1d4cf5f")),
                 1,
             );
             m.insert(
                 &tid(*b"5af7183fb1d4cf5a"),
-                ptr(tid(*b"5af7183fb1d4cf5a")),
+                &ptr(tid(*b"5af7183fb1d4cf5a")),
                 1,
             );
             m.insert(
                 &tid(*b"5af7183fb1d4cf5b"),
-                ptr(tid(*b"5af7183fb1d4cf5b")),
+                &ptr(tid(*b"5af7183fb1d4cf5b")),
                 1,
             ); // should evict tid(1)
 
@@ -328,11 +328,11 @@ mod tests {
             };
             let mut m = Memtable::new(config);
 
-            m.insert(&trace_1, ptr(trace_1), 1);
-            m.insert(&trace_2, ptr(trace_2), 1);
+            m.insert(&trace_1, &ptr(trace_1), 1);
+            m.insert(&trace_2, &ptr(trace_2), 1);
             // re-touch tid(1) so tid(2) becomes the oldest
-            m.insert(&trace_1, ptr(trace_1), 1);
-            m.insert(&trace_3, ptr(trace_3), 1); // should evict tid(2)
+            m.insert(&trace_1, &ptr(trace_1), 1);
+            m.insert(&trace_3, &ptr(trace_3), 1); // should evict tid(2)
 
             let spans_trace2 = m.get_index(&trace_2);
             let spans_trace1 = m.get_index(&trace_1);
