@@ -171,7 +171,7 @@ fn convert_span_to_zipkin(span: Span) -> ZipkinSpan {
     };
 
     let local_endpoint = span.local_service.map(|endpoint| ZipkinEndpoint {
-        service_name: endpoint,
+        service_name: Some(endpoint),
         ipv4: None,
         ipv6: None,
         port: None,

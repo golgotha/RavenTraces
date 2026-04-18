@@ -5,7 +5,7 @@ use storage::span::{AttributeValue, SpanId, SpanKind, TraceId, Span};
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ZipkinEndpoint {
     #[serde(rename = "serviceName")]
-    pub service_name: String,
+    pub service_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ipv4: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,8 +81,8 @@ impl From<&ZipkinSpan> for Span {
             events: vec![],
             status_code: extract_status_code(&tags),
             status_message: extract_status_message(&tags),
-            local_service: span.local_endpoint.as_ref().and_then(|e| Some(e.service_name.clone())),
-            remote_service: span.remote_endpoint.as_ref().and_then(|e| Some(e.service_name.clone())),
+            local_service: span.local_endpoint.clone().and_then(|e| e.service_name),
+            remote_service: span.remote_endpoint.clone().and_then(|e| e.service_name),
         }
     }
 }
