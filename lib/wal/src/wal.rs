@@ -1,10 +1,19 @@
 use std::fs;
-use std::fs::{DirEntry};
+use std::fs::{DirEntry, File};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use log::{info};
+use log::{debug, info, Level};
+use serde::{Deserialize, Serialize};
+use serde_json;
+use common::clock::{now_millis};
 use crate::errors::WalError;
-use crate::log_entry::LogEntry;
-use crate::segment::Segment;
+use crate::log_entry::{LogEntry, LogEntryPointer};
+use crate::segment::{Segment};
+use crate::storage::{Readable, Storage, Writable};
+use crate::storage::storage::FileStorage;
+
+const CHECKPOINT_FILE_NAME: &str = "checkpoint.json";
+const FILE_EXTENSION: &str = ".wal";
 
 #[derive(Debug)]
 pub struct WalOptions {
@@ -25,10 +34,25 @@ impl Default for WalOptions {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+struct Checkpoint {
+    safe_segment: u32,
+}
+
 pub struct WAL {
     active_segment: Segment,
     options: WalOptions,
-    dir: PathBuf
+    dir: PathBuf,
+    last_segment_id: u32,
+    last_checkpoint: Option<Checkpoint>,
+
+}
+
+pub struct AppendResult {
+    segment_id: u32,
+    offset: u64,
+    length: u32,
+    last_update: u128,
 }
 
 impl WAL {
@@ -38,38 +62,53 @@ impl WAL {
     }
 
     pub fn with_options<P: AsRef<Path>>(path: P, options: WalOptions) -> Result<Self, WalError> {
-        let path = path.as_ref();
-        info!("Opening WAL directory {:?}", &path);
+        let wal_path = PathBuf::from(path.as_ref())
+            .join("wal");
+        info!("Opening WAL directory {:?}", &wal_path );
 
-        if !path.exists() {
-            info!("Create {:?} directory. ", &path);
-            fs::create_dir_all(path)?;
+        if !wal_path.exists() {
+            info!("Create {:?} directory. ", &wal_path );
+            fs::create_dir_all(&wal_path)?;
         }
 
+        let mut last_segment_id = 0;
         let active_segment: Segment;
-        let last_segment = get_last_segment(path);
+        let last_segment = get_last_segment(&wal_path);
         if last_segment.is_none() {
-            info!("No segments found in {:?}", &path);
-            let segment  = Segment::create(path, options.segment_capacity)?;
+            info!("No segments found in {:?}", &wal_path);
+            let segment  = Segment::create(&wal_path , options.segment_capacity)?;
             active_segment = segment;
         } else {
-            let segment = open_dir_entry(last_segment.unwrap())?;
+            let segment = open_segment(last_segment.unwrap())?;
+            last_segment_id = segment.header().segment_id();
             info!("Found segment found with segment index {:?}", segment.header().segment_id());
             active_segment = segment;
         }
 
         info!("Active segment size: {}Kb", active_segment.segment_size()? / 1024);
 
-        let wal = WAL { active_segment, options, dir: path.to_path_buf() };
+        let wal = WAL {
+            active_segment,
+            options,
+            dir: wal_path,
+            last_segment_id,
+            last_checkpoint: None,
+        };
         Ok(wal)
     }
 
-    pub fn append(&mut self, entry: &LogEntry) -> Result<(), WalError> {
+    pub fn append(&mut self, entry: &LogEntry) -> Result<AppendResult, WalError> {
         if self.should_rotate(entry) {
             info!("Rotate segment");
             self.rotate_segment()?;
         }
-        self.active_segment.append(entry)
+        self.active_segment.append(entry)?;
+        Ok(AppendResult {
+            segment_id: self.active_segment.header().segment_id(),
+            offset: self.active_segment.segment_size()?,
+            length: entry.header().block_size,
+            last_update: now_millis(),
+        })
     }
 
     pub fn rotate_segment(&mut self) -> Result<(), WalError> {
@@ -78,12 +117,86 @@ impl WAL {
         Ok(())
     }
 
-    pub fn replay(&mut self) -> Result<Vec<LogEntry>, WalError> {
-        Ok(Vec::new())
+    pub fn replay(&mut self) -> Result<Vec<LogEntryPointer>, WalError> {
+        info!("Replaying WAL entries");
+
+        let mut offset = Segment::header_size() as u64;
+        let checkpoint = self.read_checkpoint();
+        let safe_segment = checkpoint.map(|c| c.safe_segment)
+            .unwrap_or(0);
+
+        info!("Last safe segment #{}", safe_segment);
+
+        let mut entries = Vec::new();
+        let mut current_segment_id = safe_segment;
+        while current_segment_id < self.last_segment_id {
+            current_segment_id += 1;
+            debug!("Opening segment={}", current_segment_id);
+            let segment = self.open_segment_by_id(current_segment_id)?;
+            let segment_size = segment.segment_size()?;
+
+            while offset < segment_size {
+                let log_entry : LogEntry = self.active_segment.read_log_entry(offset)?;
+                let segment_id = self.active_segment.header().segment_id();
+                entries.push(LogEntryPointer {
+                    segment_id,
+                    offset,
+                    payload: Some(log_entry.payload),
+                });
+                offset += log_entry.header.block_size as u64;
+            }
+        }
+
+        info!("Reading {} WAL entries completed", entries.len());
+        Ok(entries)
     }
 
-    pub fn flush(&mut self) -> Result<(), WalError> {
-        todo!("Require implementation")
+    pub fn checkpoint(&mut self, max_segment_id: u32) -> Result<(), WalError> {
+        let checkpoint_file_path = self.dir.to_path_buf().join(CHECKPOINT_FILE_NAME);
+        let mut storage = FileStorage::open(checkpoint_file_path, false)?;
+        let checkpoint = Checkpoint {
+            safe_segment: max_segment_id
+        };
+        storage.write(&checkpoint)?;
+        self.last_checkpoint = Some(checkpoint);
+        self.rotate_segment()?;
+        Ok(())
+    }
+
+    pub fn cleanup(&mut self) -> Result<(), WalError> {
+        if let Some(checkpoint) = &self.last_checkpoint {
+            info!("Cleaning WAL segments");
+            let safe_segment = checkpoint.safe_segment;
+            let all_segments = list_segments(&self.dir)?;
+
+            let segments_to_remove: Vec<DirEntry> = all_segments
+                .into_iter()
+                .filter_map(|entry| {
+                    let file_name = entry.file_name();
+                    let file_name = file_name.to_str()?;
+
+                    let segment_id = extract_segment_id(file_name)?;
+                    if segment_id <= safe_segment {
+                        Some(entry)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            info!("Found {} segments to remove", segments_to_remove.len());
+
+            segments_to_remove.into_iter().for_each(|dir_entry: DirEntry| {
+                let segment_path = dir_entry.path();
+                if log::log_enabled!(Level::Debug) {
+                    debug!("Remove Segment: {:?} ", segment_path.display());
+                }
+                Segment::remove(segment_path)
+                    .expect("Unable to remove segment file");
+            });
+        }
+
+        Ok(())
     }
 
     fn should_rotate(&self, entry: &LogEntry) -> bool {
@@ -92,9 +205,89 @@ impl WAL {
             .expect("WAL entry must have segment size");
         segment_size + payload_size as u64 > self.options.segment_capacity as u64
     }
+
+    fn read_checkpoint(&mut self) -> Result<Checkpoint, WalError> {
+        let checkpoint_file_path = self.dir.to_path_buf().join(CHECKPOINT_FILE_NAME);
+        let exists = FileStorage::exists(&checkpoint_file_path);
+
+        if exists {
+            let file = File::open(checkpoint_file_path)?;
+            let reader = BufReader::new(file);
+            let checkpoint: Checkpoint = serde_json::from_reader(reader)
+                .map_err(|e| WalError::CorruptedEntry(format!("Can not open WAL checkpoint file: {}", e.to_string())))?;
+            Ok(checkpoint)
+        } else {
+            Err(WalError::NoCheckpoint("No checkpoint found".into()))
+        }
+    }
+
+    fn open_segment_by_id(&self, segment_id: u32) -> Result<Segment, WalError> {
+        info!("Opening WAL directory entry");
+        let segment_name = Segment::get_segment_name(segment_id);
+        let segment_path = Path::new(self.dir.as_path())
+            .join(segment_name);
+
+        let file = File::open(&segment_path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(WalError::NotAFile(format!(
+                "Expected a file but found: {:?}",
+                segment_path
+            )));
+        }
+
+        let segment = Segment::open(segment_path)?;
+        Ok(segment)
+    }
 }
 
-fn open_dir_entry(entry: DirEntry) -> Result<Segment, WalError> {
+impl AppendResult {
+    pub fn segment_id(&self) -> u32 {
+        self.segment_id
+    }
+
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    pub fn length(&self) -> u32 {
+        self.length
+    }
+
+    pub fn last_update(&self) -> u128 {
+        self.last_update
+    }
+}
+
+impl Writable for Checkpoint {
+    fn serialize(&self) -> Vec<u8> {
+        let json_string = serde_json::to_string(self)
+            .unwrap();
+        // Convert JSON string to Vec<u8>
+        json_string.into_bytes()
+    }
+
+    fn serialized_size(&self) -> usize {
+        todo!()
+    }
+}
+
+impl Readable for Checkpoint {
+    fn deserialize(buffer: &[u8]) -> Result<Self, WalError>
+    where
+        Self: Sized
+    {
+        let checkpoint: Checkpoint = serde_json::from_slice(buffer)
+            .unwrap();
+        Ok(checkpoint)
+    }
+
+    fn num_bytes_to_read() -> usize {
+        size_of::<Checkpoint>()
+    }
+}
+
+fn open_segment(entry: DirEntry) -> Result<Segment, WalError> {
     info!("Opening WAL directory entry");
     let metadata = entry.metadata()?;
     if !metadata.is_file() {
@@ -110,8 +303,8 @@ fn open_dir_entry(entry: DirEntry) -> Result<Segment, WalError> {
 
 fn get_last_segment(path: &Path) -> Option<DirEntry> {
     let mut segments: Vec<DirEntry> = fs::read_dir(path)
-        .ok()?                       // handle read_dir error
-        .filter_map(|e| e.ok())      // ignore individual entry errors
+        .ok()?
+        .filter_map(|e| e.ok())
         .filter(|entry| {
             entry
                 .path()
@@ -121,11 +314,33 @@ fn get_last_segment(path: &Path) -> Option<DirEntry> {
         })
         .collect();
 
-    // Sort by filename (lexicographically)
     segments.sort_by_key(|entry| entry.path());
 
-    // Return the last DirEntry
     segments.pop()
+}
+
+fn list_segments(path: &Path) -> Result<Vec<DirEntry>, WalError> {
+    let mut segments: Vec<DirEntry> = fs::read_dir(path)
+        .ok()
+        .unwrap()
+        .filter_map(|e| e.ok())      // ignore individual entry errors
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .map(|ext| ext == "wal")
+                .unwrap_or(false)
+        })
+        .collect();
+    segments.sort_by_key(|entry| entry.path());
+    Ok(segments)
+}
+
+fn extract_segment_id(name: &str) -> Option<u32> {
+    name.strip_prefix("segment_")?
+        .strip_suffix(FILE_EXTENSION)?
+        .parse::<u32>()
+        .ok()
 }
 
 #[cfg(test)]
@@ -141,7 +356,6 @@ mod tests {
     fn make_header() -> LogEntryHeader {
         LogEntryHeader {
             block_size: 10,
-            sequence: 1,
             payload_size: 1024,
             checksum: 1234,
         }
@@ -171,7 +385,7 @@ mod tests {
         let dir = temp_dir();
         WAL::open(dir.path()).expect("open failed");
 
-        let wal_files: Vec<_> = fs::read_dir(dir.path())
+        let wal_files: Vec<_> = fs::read_dir(dir.path().join("wal"))
             .unwrap()
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().map_or(false, |x| x == "wal"))
@@ -186,7 +400,7 @@ mod tests {
         WAL::open(dir.path()).expect("first open failed");
         WAL::open(dir.path()).expect("second open failed");
 
-        let wal_files: Vec<_> = fs::read_dir(dir.path())
+        let wal_files: Vec<_> = fs::read_dir(dir.path().join("wal"))
             .unwrap()
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().map_or(false, |x| x == "wal"))
@@ -225,7 +439,7 @@ mod tests {
             wal.append(&make_entry(&[0u8; 32])).expect("append failed");
         }
 
-        let wal_files: Vec<_> = fs::read_dir(dir.path())
+        let wal_files: Vec<_> = fs::read_dir(dir.path().join("wal"))
             .unwrap()
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().map_or(false, |x| x == "wal"))
@@ -240,7 +454,7 @@ mod tests {
         let mut wal = WAL::open(dir.path()).expect("open failed");
         wal.rotate_segment().expect("rotate failed");
 
-        let wal_files: Vec<_> = fs::read_dir(dir.path())
+        let wal_files: Vec<_> = fs::read_dir(dir.path().join("wal"))
             .unwrap()
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().map_or(false, |x| x == "wal"))
@@ -281,11 +495,11 @@ mod tests {
         let mut wal = WAL::open(dir.path()).expect("open failed");
         wal.rotate_segment().expect("rotate failed");
 
-        let last = get_last_segment(dir.path()).expect("expected a segment");
+        let last = get_last_segment(&dir.path().join("wal")).expect("expected a segment");
         let name = last.file_name();
         let name = name.to_string_lossy();
 
-        // The last file should sort highest — segment_000001.wal > segment_000000.wal
+        // The last file should sort highest — segment_0000000001.wal > segment_000000.wal
         assert!(name.contains("000002"), "got: {}", name);
     }
 

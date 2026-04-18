@@ -11,6 +11,8 @@ pub trait Storage {
 
     fn read_at<T: Readable>(&mut self, offset: u64) -> Result<T, WalError>;
 
+    fn read_bytes_at(&mut self, offset: u64, size: usize) -> Result<Vec<u8>, WalError>;
+
     fn flush(&mut self) -> Result<(), WalError>;
 }
 

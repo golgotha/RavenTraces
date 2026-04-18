@@ -4,11 +4,12 @@ use common::clock;
 use crate::errors::WalError;
 use crate::storage::storage::FileStorage;
 use crate::storage::{Readable, Storage, Writable};
-use crate::log_entry::LogEntryHeader;
+use crate::log_entry::{LogEntry, LogEntryHeader};
 use crate::sequence::Sequence;
 
 const SEGMENT_MAGIC: &[u8; 4] = b"RWAL";
-const SEGMENT_PREFIX: &str = "segment_";
+pub const SEGMENT_PREFIX: &str = "segment_";
+pub const SEGMENT_EXTENSION: &str = ".wal";
 
 #[repr(C, packed)]
 #[derive(Debug)]
@@ -58,7 +59,7 @@ impl Segment {
     /// Opens the segment file at the specified path.
     /// An individual file must only be opened by one segment at a time.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Segment, WalError> {
-        let mut storage = FileStorage::open(path)?;
+        let mut storage = FileStorage::open(path, true)?;
         let segment_header: SegmentHeader = storage.read()?;
 
         if segment_header.magic != *SEGMENT_MAGIC {
@@ -94,7 +95,7 @@ impl Segment {
         })
     }
 
-    pub fn create<P: AsRef<Path>>(path: P, capacity: usize) -> Result<Self, WalError> {
+    pub fn create<P: AsRef<Path>>(path: P, _capacity: usize) -> Result<Self, WalError> {
         let mut  sequence = Sequence::new(0);
         create_segment_storage(path, sequence.next())
     }
@@ -112,6 +113,23 @@ impl Segment {
         Ok(())
     }
 
+    pub fn read_log_entry(&mut self, offset: u64) -> Result<LogEntry, WalError> {
+        let header: LogEntryHeader = self.storage.read_at(offset)?;
+        let header_size = LogEntryHeader::num_bytes_to_read();
+        let payload_size = header.payload_size;
+        let payload = self.storage.read_bytes_at(offset + header_size as u64, payload_size as usize)?;
+        let checksum = crc32fast::hash(&payload);
+        if header.checksum != checksum {
+            return Err(WalError::CorruptedEntry("Log entry checksum mismatch".into()));
+        }
+
+        let result = LogEntry {
+            header,
+            payload,
+        };
+        Ok(result)
+    }
+
     pub fn header(&self) -> &SegmentHeader {
         &self.header
     }
@@ -124,8 +142,16 @@ impl Segment {
         self.index.clone()
     }
 
-    fn header_size() -> usize {
+    pub fn header_size() -> usize {
         size_of::<SegmentHeader>()
+    }
+
+    pub fn get_segment_name(segment_id: u32) -> String {
+        format!("{}{:010}{}",  SEGMENT_PREFIX, segment_id, SEGMENT_EXTENSION)
+    }
+
+    pub fn remove<P: AsRef<Path>>(path: P) -> Result<(), WalError> {
+        FileStorage::delete(path)
     }
 }
 
@@ -171,10 +197,10 @@ impl Readable for SegmentHeader {
 
 fn create_segment_storage<P: AsRef<Path>>(path: P, sequence: Sequence) -> Result<Segment, WalError> {
     let current_segment_id = sequence.current();
-    let segment_name = format!("{}{:06}.wal",  SEGMENT_PREFIX, current_segment_id);
+    let segment_name = Segment::get_segment_name(current_segment_id);
     let segment_path = PathBuf::from(path.as_ref()).join(segment_name);
 
-    let mut storage = FileStorage::open(segment_path)?;
+    let mut storage = FileStorage::open(segment_path, true)?;
     let current_time = clock::now_millis();
 
     let header = SegmentHeader {
@@ -350,7 +376,8 @@ mod tests {
         #[test]
         fn header_version_is_one() {
             let dir = temp_dir();
-            let seg = Segment::create(dir.path(), DEFAULT_CAPACITY).expect("create failed");
+            let seg = Segment::create(dir.path(), DEFAULT_CAPACITY)
+                .expect("Segment creation failed");
             assert_eq!(seg.header().version(), 1);
         }
     }
@@ -361,7 +388,8 @@ mod tests {
         #[test]
         fn open_after_create() {
             let dir = temp_dir();
-            let created = Segment::create(dir.path(), DEFAULT_CAPACITY).expect("create failed");
+            let created = Segment::create(dir.path(), DEFAULT_CAPACITY)
+                .expect("Segment creation failed");
             let segment_id = created.header().segment_id();
 
             // Find the written file and re-open it.
