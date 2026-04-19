@@ -4,7 +4,6 @@ use log::{error, info};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
-use actix_web::web::trace;
 use storage::block::BlockId;
 use storage::errors::StorageError;
 use storage::memtable::{Entry, Memtable};
@@ -63,7 +62,7 @@ impl TraceQuerier {
     pub fn get_trace(&self, trace_id: &TraceId) -> Vec<Span> {
         let read_mem_table = match self.mem_table.read() {
             Ok(guard) => guard,
-            Err(e) => {
+            Err(_) => {
                 error!("Can not aquire a read lock for mem_table");
                 return vec![];
             },
@@ -93,7 +92,7 @@ impl TraceQuerier {
         let span_name = search_request.span_name.clone();
         let limit = search_request.limit;
 
-        let spans = match (&service_name) {
+        let spans = match &service_name {
             Some(service_name) => self.mem_table
                 .read()
                 .unwrap()

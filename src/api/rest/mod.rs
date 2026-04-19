@@ -1,11 +1,9 @@
 use crate::api::rest::models::VersionInfo;
 use crate::distributor::distributor::Distributor;
-use crate::querier::querier::Querier;
 use actix_web::middleware::{Compress, Logger, NormalizePath};
 use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
 use actix_web_prom::PrometheusMetricsBuilder;
 use log::info;
-use serde::Serialize;
 use std::io;
 use std::sync::Mutex;
 use crate::settings::Settings;
@@ -14,12 +12,6 @@ use crate::api::zipkin::zipkin_api::{post_zipkin_span, get_zipkin_services,
 use crate::querier::zipkin_querier::ZipkinQuerier;
 
 pub mod models;
-
-#[derive(Serialize)]
-struct TraceResponse {
-    trace_id: String,
-    span_count: usize,
-}
 
 #[get("/")]
 pub async fn index() -> impl Responder {

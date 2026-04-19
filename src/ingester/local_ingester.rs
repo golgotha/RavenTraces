@@ -23,7 +23,7 @@ impl Ingester for LocalIngester {
 
         match corvus_engine.append(spans) {
             Ok(()) => Ok(()),
-            Err(e) => Err(StorageError::StorageAppendError("Storage append error".to_string())),
+            Err(_) => Err(StorageError::StorageAppendError("Storage append error".to_string())),
         }
     }
 }

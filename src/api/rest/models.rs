@@ -1,8 +1,6 @@
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
-use storage::span::{AttributeValue, Span, SpanEvent, SpanId, TraceId};
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct VersionInfo {
     pub title: String,
     pub version: String,

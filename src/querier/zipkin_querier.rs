@@ -54,14 +54,6 @@ impl Querier<ZipkinSpan> for ZipkinQuerier {
     }
 }
 
-fn convert_to_zipkin(spans: Vec<Span>) -> Vec<ZipkinSpan> {
-    spans
-        // .sort_by_key(|span| std::cmp::Reverse(span.timestamp))
-        .into_iter()
-        .map(|span| convert_span_to_zipkin(span))
-        .collect()
-}
-
 fn convert_span_to_zipkin(span: Span) -> ZipkinSpan {
     let parent_span_id = span.parent_span_id.map(|id| id.to_hex());
     let tags: HashMap<String, String> = span

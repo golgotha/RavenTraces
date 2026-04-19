@@ -117,12 +117,6 @@ impl BlockIndexEntryBuilder {
         let offset = self.offset.unwrap_or(0);
         let length = self.length.unwrap_or(0);
 
-        if let Some(offset) = self.offset {
-            if offset < 0 {
-                return Err("Offset must be greater than 0".into());
-            }
-        }
-
         if let Some(length) = self.length
             && length < 0
         {
