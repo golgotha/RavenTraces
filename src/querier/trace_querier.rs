@@ -1,10 +1,12 @@
 use crate::querier::model::SearchRequest;
 use common::binary_readers::{read_n_bytes, read_u32};
-use log::{error, info};
+use log::{error, info, warn};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use storage::block::BlockId;
+use storage::block_index;
+use storage::block_index::BlockIndexEntry;
 use storage::errors::StorageError;
 use storage::memtable::{Entry, Memtable};
 use storage::span::{Span, TraceId};
@@ -46,7 +48,7 @@ impl TraceQuerier {
                 }
             };
 
-            for entry in block_index.entries() {
+            for entry in block_index.entries().values() {
                 let block_ref = BlockRef::new(block.clone(), entry.offset(), entry.length());
                 self.block_index.insert(entry.trace_id(), block_ref);
             }
@@ -68,17 +70,10 @@ impl TraceQuerier {
             },
         };
         let mem_table_spans = read_mem_table.get_index(trace_id);
-        let block_storage_spans: Vec<Span> = get_trace_spans_from_storage(trace_id);
+        let block_storage_spans: Vec<Span> = self.get_trace_spans_from_storage(trace_id)
+            .unwrap_or(Vec::new());
+
         let spans = merge_spans(mem_table_spans, block_storage_spans);
-        // self.get_trace_ref(trace_id)
-        //     .map(|block_ref| {
-        //         let block_id = &block_ref.block_id;
-        //         let offset = block_ref.offset;
-        //         let length = block_ref.length;
-        //         let block_data = self.storage.read_block_at(block_id, offset, length)
-        //             .unwrap();
-        //         return read_block_entries(&block_data);
-        //     })
         spans
     }
 
@@ -131,17 +126,49 @@ impl TraceQuerier {
 
         Ok(spans)
     }
+
+    fn get_trace_spans_from_storage(&self, trace_id: &TraceId) -> Result<Vec<Span>, StorageError> {
+        let storage_meta = match self.storage.read_blocks_meta() {
+            Ok(meta) => meta,
+            Err(_) => {
+                error!("Error occurred while reading storage metadata");
+                return Ok(vec![]);
+            }
+        };
+
+        let trace_spans = Vec::new();
+        for block in storage_meta.blocks {
+            let block_id = BlockId::new(block);
+            let block_index = self.storage.read_block_index(&block_id)?;
+
+            let Some(entry) = block_index.find_trace_id(trace_id) else {
+                continue;
+            };
+
+            let block_data = self.storage.read_block_slice(&block_id, entry.offset(), entry.length())?;
+            let block_spans = block_data.spans();
+            let spans = block_spans.iter()
+                .map(|entry| Span::deserialize(entry.payload().to_vec()))
+                .collect();
+
+            return Ok(spans);
+        }
+        Ok(trace_spans)
+    }
 }
 
-fn get_trace_spans_from_storage(trace_id: &TraceId) -> Vec<Span> {
-    todo!()
-}
 
 fn merge_spans(
     mem_table_spans: Vec<Span>,
     block_storage_spans: Vec<Span>,
 ) -> Vec<Span> {
-    mem_table_spans
+    let mut merged = mem_table_spans
+        .into_iter()
+        .chain(block_storage_spans)
+        .collect::<Vec<_>>();
+
+    merged.sort_by_key(|span| span.timestamp());
+    merged
 }
 
 fn read_block_entries(data: &Vec<u8>) -> Vec<Span> {

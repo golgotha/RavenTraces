@@ -1,3 +1,4 @@
+use std::collections::{HashMap};
 use crate::span::TraceId;
 use common::binary_readers::{read_bytes, read_u32, read_u64};
 use common::serialization::{Readable, Writable};
@@ -5,7 +6,7 @@ use common::serialization::{Readable, Writable};
 #[derive(Debug)]
 pub struct BlockIndex {
     total_entries: u32,
-    entries: Vec<BlockIndexEntry>,
+    entries: HashMap<TraceId, BlockIndexEntry>,
 }
 
 #[derive(Debug)]
@@ -21,17 +22,21 @@ impl BlockIndex {
     pub fn new() -> Self {
         Self {
             total_entries: 0,
-            entries: Vec::new(),
+            entries: HashMap::new(),
         }
     }
 
     pub fn insert(&mut self, index: BlockIndexEntry) {
-        self.entries.push(index);
+        self.entries.insert(index.trace_id, index);
         self.total_entries += 1;
     }
 
-    pub fn entries(&self) -> &Vec<BlockIndexEntry> {
+    pub fn entries(&self) -> &HashMap<TraceId, BlockIndexEntry> {
         &self.entries
+    }
+    
+    pub fn find_trace_id(&self, trace_id: &TraceId) -> Option<&BlockIndexEntry> {
+        self.entries.get(trace_id)
     }
 }
 
