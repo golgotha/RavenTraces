@@ -8,3 +8,16 @@ pub struct SearchRequest {
     pub end_ts: Option<u64>,
     pub lookback: Option<u64>,
 }
+
+impl SearchRequest {
+    pub fn for_trace_id(trace_id: &TraceId) -> SearchRequest {
+        SearchRequest {
+            trace_id: Some(trace_id.clone()),
+            service_name: None,
+            span_name: None,
+            limit: None,
+            end_ts: None,
+            lookback: None,
+        }
+    }
+}

@@ -1,6 +1,6 @@
 use crate::querier::model::SearchRequest;
 use common::binary_readers::{read_n_bytes, read_u32};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -11,6 +11,7 @@ use storage::errors::StorageError;
 use storage::memtable::{Entry, Memtable};
 use storage::span::{Span, TraceId};
 use storage::sstable_reader::{SStableReader, SStableReaderImpl};
+use crate::querier::storage_search::{BlockStorageSearch, LocalStorageSearch};
 
 pub struct BlockRef {
     block_id: BlockId,
@@ -21,6 +22,7 @@ pub struct BlockRef {
 pub struct TraceQuerier {
     mem_table: Arc<RwLock<Memtable>>,
     storage: Box<dyn SStableReader + Send + Sync>,
+    storage_search: LocalStorageSearch,
     block_index: HashMap<TraceId, BlockRef>,
 }
 
@@ -28,8 +30,9 @@ impl TraceQuerier {
     pub fn new(base_dir: PathBuf, mem_table: Arc<RwLock<Memtable>>) -> TraceQuerier {
         Self {
             mem_table,
-            storage: Box::new(SStableReaderImpl::new(base_dir)),
+            storage: Box::new(SStableReaderImpl::new(base_dir.clone())),
             block_index: HashMap::new(),
+            storage_search: LocalStorageSearch::new(Box::new(SStableReaderImpl::new(base_dir)))
         }
     }
 
@@ -70,8 +73,8 @@ impl TraceQuerier {
             },
         };
         let mem_table_spans = read_mem_table.get_index(trace_id);
-        let block_storage_spans: Vec<Span> = self.get_trace_spans_from_storage(trace_id)
-            .unwrap_or(Vec::new());
+        let block_storage_spans: Vec<Span> = self.storage_search.search(&SearchRequest::for_trace_id(trace_id))
+            .expect("An error occurred. Can not search for block storage");
 
         let spans = merge_spans(mem_table_spans, block_storage_spans);
         spans
@@ -85,13 +88,13 @@ impl TraceQuerier {
         let mut spans_result: Vec<Span> = Vec::new();
         let service_name = search_request.service_name.clone();
         let span_name = search_request.span_name.clone();
-        let limit = search_request.limit;
+        let limit = search_request.limit.unwrap_or(usize::MAX);
 
         let spans = match &service_name {
             Some(service_name) => self.mem_table
                 .read()
                 .unwrap()
-                .get_spans_by_service(&service_name, limit.unwrap_or(usize::MAX))
+                .get_spans_by_service(&service_name, limit)
                 .unwrap_or_default(),
             None =>  self.mem_table
                 .read()
@@ -99,7 +102,7 @@ impl TraceQuerier {
                 .entries()
                 .iter()
                 .map(|entry: &Entry| entry.get_span())
-                .take(limit.unwrap_or(usize::MAX))
+                .take(limit)
                 .cloned()
                 .collect()
         };
@@ -114,6 +117,20 @@ impl TraceQuerier {
 
         spans_result.extend(spans);
 
+        if spans_result.len() < limit {
+            debug!("Spans in memtable {} less than limit {}. Search in block storage.", spans_result.len(), limit);
+            let storage_request = SearchRequest {
+                trace_id: search_request.trace_id.clone(),
+                service_name: search_request.service_name.clone(),
+                span_name: search_request.span_name.clone(),
+                limit: Some(limit - spans_result.len()),
+                end_ts: search_request.end_ts,
+                lookback: search_request.lookback,
+            };
+            let storage_spans = self.storage_search.search(&storage_request)?;
+            spans_result.extend(storage_spans);
+        }
+
         Ok(spans_result)
     }
 
@@ -125,35 +142,6 @@ impl TraceQuerier {
             .query_by_time(start_ts, end_ts);
 
         Ok(spans)
-    }
-
-    fn get_trace_spans_from_storage(&self, trace_id: &TraceId) -> Result<Vec<Span>, StorageError> {
-        let storage_meta = match self.storage.read_blocks_meta() {
-            Ok(meta) => meta,
-            Err(_) => {
-                error!("Error occurred while reading storage metadata");
-                return Ok(vec![]);
-            }
-        };
-
-        let trace_spans = Vec::new();
-        for block in storage_meta.blocks {
-            let block_id = BlockId::new(block);
-            let block_index = self.storage.read_block_index(&block_id)?;
-
-            let Some(entry) = block_index.find_trace_id(trace_id) else {
-                continue;
-            };
-
-            let block_data = self.storage.read_block_slice(&block_id, entry.offset(), entry.length())?;
-            let block_spans = block_data.spans();
-            let spans = block_spans.iter()
-                .map(|entry| Span::deserialize(entry.payload().to_vec()))
-                .collect();
-
-            return Ok(spans);
-        }
-        Ok(trace_spans)
     }
 }
 
