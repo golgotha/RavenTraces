@@ -4,6 +4,7 @@ use log::{error, info};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use actix_web::web::trace;
 use storage::block::BlockId;
 use storage::errors::StorageError;
 use storage::memtable::{Entry, Memtable};
@@ -59,16 +60,16 @@ impl TraceQuerier {
         self.block_index.get(trace_id)
     }
 
-    pub fn get_trace(&self, trace_id: &TraceId) -> Option<Vec<Span>> {
+    pub fn get_trace(&self, trace_id: &TraceId) -> Vec<Span> {
         let read_mem_table = match self.mem_table.read() {
             Ok(guard) => guard,
             Err(e) => {
                 error!("Can not aquire a read lock for mem_table");
-                None
-            }?,
+                return vec![];
+            },
         };
         let mem_table_spans = read_mem_table.get_index(trace_id);
-        let block_storage_spans: Option<Vec<Span>> = None;
+        let block_storage_spans: Vec<Span> = get_trace_spans_from_storage(trace_id);
         let spans = merge_spans(mem_table_spans, block_storage_spans);
         // self.get_trace_ref(trace_id)
         //     .map(|block_ref| {
@@ -133,10 +134,14 @@ impl TraceQuerier {
     }
 }
 
+fn get_trace_spans_from_storage(trace_id: &TraceId) -> Vec<Span> {
+    todo!()
+}
+
 fn merge_spans(
-    mem_table_spans: Option<Vec<Span>>,
-    block_storage_spans: Option<Vec<Span>>,
-) -> Option<Vec<Span>> {
+    mem_table_spans: Vec<Span>,
+    block_storage_spans: Vec<Span>,
+) -> Vec<Span> {
     mem_table_spans
 }
 

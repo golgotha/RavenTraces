@@ -90,14 +90,14 @@ impl Memtable {
         self.max_segment_id = segment_id;
     }
 
-    pub fn get_index(&self, trace_id: &TraceId) -> Option<Vec<Span>> {
-        self.trace_index.get(trace_id).map(|indices| {
-            indices
-                .iter()
-                .map(|&i| &self.spans[i])
-                .map(|entry: &Entry| entry.span.clone())
-                .collect::<Vec<Span>>()
-        })
+    pub fn get_index(&self, trace_id: &TraceId) -> Vec<Span> {
+        self.trace_index
+            .get(trace_id)
+            .unwrap_or(&Vec::new())
+            .into_iter()
+            .map(|&i| &self.spans[i])
+            .map(|entry: &Entry| entry.span.clone())
+            .collect::<Vec<Span>>()
     }
 
     pub fn query_by_time(&self, start: u64, end: u64) -> Vec<Span> {
@@ -327,12 +327,9 @@ mod tests {
             let spans2 = m.get_index(&tid(*b"5af7183fb1d4cf5a"));
             let spans3 = m.get_index(&tid(*b"5af7183fb1d4cf5b"));
 
-            assert!(
-                spans1.unwrap().is_empty(),
-                "tid(1) should have been evicted"
-            );
-            assert!(spans2.unwrap().len() > 0);
-            assert!(spans3.unwrap().len() > 0);
+            assert!(spans1.is_empty(), "tid(1) should have been evicted");
+            assert!(spans2.len() > 0);
+            assert!(spans3.len() > 0);
         }
 
         #[test]
@@ -355,13 +352,9 @@ mod tests {
             let spans_trace2 = m.get_index(&trace_2);
             let spans_trace1 = m.get_index(&trace_1);
             let spans_trace3 = m.get_index(&trace_3);
-            assert!(
-                spans_trace2.unwrap().is_empty(),
-                "tid(2) should have been evicted"
-            );
-            assert!(spans_trace1.unwrap().len() > 0);
-            assert!(spans_trace3.unwrap().len() > 0);
+            assert!(spans_trace2.is_empty(), "tid(2) should have been evicted");
+            assert!(spans_trace1.len() > 0);
+            assert!(spans_trace3.len() > 0);
         }
-
     }
 }

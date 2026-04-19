@@ -22,9 +22,9 @@ impl Querier<ZipkinSpan> for ZipkinQuerier {
         let trace_id = TraceId::from_str(&trace_id_str).map_err(|_| QuerierError::InvalidTraceId(trace_id_str.to_string()))?;
 
         let spans = self.trace_querier.get_trace(&trace_id)
-            .ok_or("trace not found")
-            .map(|spans| spans.into_iter().map(convert_span_to_zipkin).collect())
-            .map_err(|arg0: &str| QuerierError::InvalidSpanId(arg0.to_string()))?;
+            .into_iter()
+            .map(convert_span_to_zipkin)
+            .collect();
 
         Ok(spans)
     }
