@@ -9,6 +9,5 @@ pub mod flush_worker;
 pub mod readers;
 pub mod corvus_engine;
 pub mod types;
-pub mod global_index;
 pub mod sstable_reader;
 

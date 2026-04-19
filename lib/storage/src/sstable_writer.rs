@@ -28,11 +28,6 @@ impl SStableWriterImpl {
     fn open_block(&mut self, block_id: &BlockId) -> Result<(), StorageError> {
         info!("Creating a new block file: {}", block_id.to_string());
         self.storage.open(block_id)?;
-        let mut storage_meta = StorageMeta {
-            blocks: Vec::new(),
-        };
-        storage_meta.blocks.push(block_id.to_string());
-        self.storage.write_storage_meta(&storage_meta)?;
         Ok(())
     }
 
@@ -61,8 +56,12 @@ impl SStableWriter for SStableWriterImpl {
                 self.storage.write_block(block_id, &block_data).expect("Error occurred while writing a block");
             });
 
-        let mut storage_meta = self.storage.read_storage_meta()
-            .expect("Error occurred while reading storage meta while writing a block");
+        let mut storage_meta = match self.storage.read_storage_meta() {
+            Ok(meta) => meta,
+            Err(StorageError::NotFound(_)) => StorageMeta { blocks: Vec::new() },
+            Err(e) => return Err(e),
+        };
+            
         storage_meta.blocks.push(block_id.to_string());
         self.storage.write_storage_meta(&storage_meta)?;
 
