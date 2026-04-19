@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use storage::span::{AttributeValue, SpanId, SpanKind, TraceId, Span};
+use storage::span::{AttributeValue, SpanId, SpanKind, TraceId, Span, SpanEvent};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ZipkinEndpoint {
@@ -24,6 +24,12 @@ pub enum ZipkinKind {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ZipkinAnnotation {
+    pub timestamp: u64,
+    pub value: String
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ZipkinSpan {
     pub id: String,
     #[serde(rename = "traceId")]
@@ -40,6 +46,8 @@ pub struct ZipkinSpan {
     pub remote_endpoint: Option<ZipkinEndpoint>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<Vec<ZipkinAnnotation>>,
 }
 
 #[derive(Deserialize)]
@@ -69,6 +77,17 @@ impl From<&ZipkinSpan> for Span {
         let empty_tags = HashMap::new();
         let tags = span.tags.as_ref().unwrap_or(&empty_tags);
 
+        let events = span.annotations
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| SpanEvent {
+                timestamp: a.timestamp * 1000,  // micros -> nanos
+                name: a.value,
+                attributes: HashMap::new(),
+            })
+            .collect();
+
         Self {
             trace_id,
             span_id,
@@ -78,7 +97,7 @@ impl From<&ZipkinSpan> for Span {
             timestamp: span.timestamp,
             duration: span.duration,
             attributes: convert_tags(&tags),
-            events: vec![],
+            events,
             status_code: extract_status_code(&tags),
             status_message: extract_status_message(&tags),
             local_service: span.local_endpoint.clone().and_then(|e| e.service_name),

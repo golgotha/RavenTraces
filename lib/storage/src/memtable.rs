@@ -1,8 +1,8 @@
 use crate::span::{SizeEstimator, Span, TraceId};
+use crate::types::MemtableConfig;
 use indexmap::IndexSet;
 use log::{debug, info};
 use std::collections::{BTreeMap, HashMap};
-use crate::types::MemtableConfig;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Microseconds(u64);
@@ -78,8 +78,13 @@ impl Memtable {
         pointers.push(index);
 
         let local_service = span.local_service.clone();
-        let service_name = if local_service.is_some() {local_service.unwrap()} else { "Unknown".to_string() };
-        self.services.entry(service_name)
+        let service_name = if local_service.is_some() {
+            local_service.unwrap()
+        } else {
+            "Unknown".to_string()
+        };
+        self.services
+            .entry(service_name)
             .or_insert_with(Vec::new)
             .push(index);
         self.max_segment_id = segment_id;

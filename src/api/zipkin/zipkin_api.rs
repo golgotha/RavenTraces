@@ -4,7 +4,7 @@ use crate::querier::model::SearchRequest;
 use crate::querier::querier::Querier;
 use crate::querier::zipkin_querier::ZipkinQuerier;
 use actix_web::{HttpResponse, get, post, web};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use storage::span::Span;
 
@@ -117,7 +117,11 @@ async fn get_zipkin_spans(
         lookback: None,
     };
 
-    let zipkin_spans = querier.lock().unwrap().search_traces(&request).unwrap();
+    let zipkin_spans = querier.lock().unwrap().search_traces(&request)
+        .unwrap()
+        .iter()
+        .map(|span| span.name.clone())
+        .collect::<HashSet<String>>();
 
     HttpResponse::Ok().json(zipkin_spans)
 }

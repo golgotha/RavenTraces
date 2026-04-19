@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use storage::span::{AttributeValue, Span, TraceId};
-use crate::api::zipkin::json_model::{ZipkinEndpoint, ZipkinKind, ZipkinSpan};
+use storage::span::{AttributeValue, Span, SpanEvent, TraceId};
+use crate::api::zipkin::json_model::{ZipkinAnnotation, ZipkinEndpoint, ZipkinKind, ZipkinSpan};
 use crate::querier::model::SearchRequest;
 use crate::querier::querier::{Querier, QuerierError};
 use crate::querier::trace_querier::TraceQuerier;
@@ -98,6 +98,11 @@ fn convert_span_to_zipkin(span: Span) -> ZipkinSpan {
         port: None,
     });
 
+    let annotations = span.events
+        .into_iter()
+        .map(convert_event_to_annotation)
+        .collect();
+
     ZipkinSpan {
         id: span.span_id.to_hex(),
         trace_id: span.trace_id.to_hex(),
@@ -109,5 +114,15 @@ fn convert_span_to_zipkin(span: Span) -> ZipkinSpan {
         local_endpoint,
         remote_endpoint: None,
         tags: Some(tags),
+        annotations: Some(annotations),
+    }
+}
+
+fn convert_event_to_annotation(event: SpanEvent) -> ZipkinAnnotation {
+    let timestamp = event.timestamp / 1000; // nanos -> to micros
+    let name = event.name;
+    ZipkinAnnotation {
+        timestamp,
+        value: name,
     }
 }
