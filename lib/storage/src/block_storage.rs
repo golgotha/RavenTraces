@@ -145,7 +145,8 @@ impl BlockStorage for LocalBlockStorage {
 
         let data_vec: Vec<u8> = index
             .entries()
-            .iter()
+            .values()
+            .into_iter()
             .map(|entry| entry.serialize())
             .flatten()
             .collect();

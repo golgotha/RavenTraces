@@ -63,9 +63,9 @@ impl SStableWriter for SStableWriterImpl {
 
         let mut storage_meta = self.storage.read_storage_meta()
             .expect("Error occurred while reading storage meta while writing a block");
-
         storage_meta.blocks.push(block_id.to_string());
-        // self.storage.write_storage_meta()?;
+        self.storage.write_storage_meta(&storage_meta)?;
+
         Ok(written_bytes)
     }
 

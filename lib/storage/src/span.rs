@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Display;
 use std::str::FromStr;
-use uuid::Timestamp;
 use crate::readers::event_attribute_reader::read_span_events;
 use crate::readers::local_service_reader::read_local_service;
 use crate::readers::span_attibute_reader::read_attributes;
@@ -327,10 +326,10 @@ impl Span {
                     buffer.push(3);
                     buffer.push(if *b { 1 } else { 0 });
                 }
-                AttributeValue::StringArray(str_array) => {}
-                AttributeValue::IntArray(int_array) => {}
-                AttributeValue::FloatArray(float_array) => {}
-                AttributeValue::BoolArray(bool_array) => {}
+                AttributeValue::StringArray(_str_array) => {}
+                AttributeValue::IntArray(_int_array) => {}
+                AttributeValue::FloatArray(_float_array) => {}
+                AttributeValue::BoolArray(_bool_array) => {}
             }
         }
 
@@ -470,7 +469,7 @@ impl SizeEstimator for Span {
         size += self.name.len();
         size += 1; //kind
         size += size_of::<u64>(); // timestamp
-        size += size_of::<u64>();; // duration
+        size += size_of::<u64>(); // duration
         size += estimated_map_size(&self.attributes);
 
         for event in &self.events {

@@ -1,12 +1,11 @@
-use crate::block::{BlockMeta, DataBlock};
+use crate::block::{DataBlock};
 use crate::block_index::{BlockIndex, BlockIndexEntry};
 use crate::errors::StorageError;
-use crate::memtable::{Entry, Memtable};
+use crate::memtable::{Memtable};
 use crate::span::{Span, TraceId};
 use crate::sstable_writer::{SStableWriter, SStableWriterImpl};
 use log::{debug, info};
 use std::collections::HashMap;
-use std::sync::{Mutex};
 use wal::wal::WAL;
 
 pub trait FlushWorker: Send + Sync {
@@ -38,7 +37,7 @@ impl FlushWorker for DiskFlushWorker {
     fn flush(&mut self, wal: &mut WAL, memtable: &mut Memtable) -> Result<(), StorageError> {
         info!("Flushing memtable");
         let max_segment_id = memtable.max_segment_id();
-        let mut entries = memtable.entries();
+        let entries = memtable.entries();
 
         let mut grouped: HashMap<TraceId, Vec<&Span>> = HashMap::new();
         for entry in entries {

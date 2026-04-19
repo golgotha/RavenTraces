@@ -63,7 +63,7 @@ mod tests {
         let index_entries = block_index.entries();
         assert_eq!(index_entries.len(), 1);
 
-        for entry in index_entries {
+        for entry in index_entries.values() {
             let offset = entry.offset();
             let length = entry.length();
             let block_result = storage.read_block_at(&block_id, offset, length);
