@@ -3,6 +3,7 @@ use crate::types::MemtableConfig;
 use indexmap::IndexSet;
 use log::{debug, info};
 use std::collections::{BTreeMap, HashMap};
+use metrics::metrics;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Microseconds(u64);
@@ -66,6 +67,7 @@ impl Memtable {
         let span_entry = Entry::new(span.clone());
 
         self.size += estimated_size;
+
         self.spans.push(span_entry);
 
         let pointers = self.trace_index.entry(*trace_id).or_insert_with(Vec::new);
@@ -88,9 +90,13 @@ impl Memtable {
             .or_insert_with(Vec::new)
             .push(index);
         self.max_segment_id = segment_id;
+        metrics::MEMTABLE_SIZE_BYTES.set(self.size as i64);
+        metrics::MEMTABLE_ENTRIES.inc();
+        metrics::MEMTABLE_WRITES.inc();
     }
 
     pub fn get_index(&self, trace_id: &TraceId) -> Vec<Span> {
+        metrics::MEMTABLE_READS.inc();
         self.trace_index
             .get(trace_id)
             .unwrap_or(&Vec::new())
@@ -101,6 +107,7 @@ impl Memtable {
     }
 
     pub fn query_by_time(&self, start: u64, end: u64) -> Vec<Span> {
+        metrics::MEMTABLE_READS.inc();
         self.time_index
             .range(Microseconds::from_millis(start)..=Microseconds::from_millis(end))
             .flat_map(|(_, indices)| {
@@ -113,6 +120,7 @@ impl Memtable {
     }
 
     pub fn get_spans_by_service(&self, service: &str, limit: usize) -> Option<Vec<Span>> {
+        metrics::MEMTABLE_READS.inc();
         self.services.get(service).map(|indices| {
             indices
                 .iter()
@@ -125,6 +133,7 @@ impl Memtable {
     }
 
     pub fn entries(&self) -> &Vec<Entry> {
+        metrics::MEMTABLE_READS.inc();
         &self.spans
     }
 

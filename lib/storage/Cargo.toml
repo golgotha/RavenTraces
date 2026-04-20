@@ -13,6 +13,7 @@ testing = []
 [dependencies]
 common = { path = "../common" }
 wal = { path = "../wal"}
+metrics = {path = "../metrics"}
 indexmap = "2.13.0"
 log = "0.4"
 tempfile = "3.27.0"
