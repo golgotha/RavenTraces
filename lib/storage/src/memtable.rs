@@ -3,6 +3,7 @@ use crate::types::MemtableConfig;
 use indexmap::IndexSet;
 use log::{debug, info};
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 use metrics::metrics;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -97,13 +98,16 @@ impl Memtable {
 
     pub fn get_index(&self, trace_id: &TraceId) -> Vec<Span> {
         metrics::MEMTABLE_READS.inc();
-        self.trace_index
-            .get(trace_id)
-            .unwrap_or(&Vec::new())
-            .into_iter()
-            .map(|&i| &self.spans[i])
-            .map(|entry: &Entry| entry.span.clone())
-            .collect::<Vec<Span>>()
+        let Some(indices) = self.trace_index.get(trace_id) else {
+            return Vec::new();
+        };
+
+        let spans = indices
+            .iter()
+            .map(|&i| &self.spans[i].span)
+            .cloned()
+            .collect::<Vec<Span>>();
+        spans
     }
 
     pub fn query_by_time(&self, start: u64, end: u64) -> Vec<Span> {
@@ -113,23 +117,21 @@ impl Memtable {
             .flat_map(|(_, indices)| {
                 indices
                     .iter()
-                    .map(|&i| &self.spans[i])
-                    .map(|entry: &Entry| entry.span.clone())
+                    .map(|&i| &self.spans[i].span)
             })
+            .cloned()
             .collect()
     }
 
-    pub fn get_spans_by_service(&self, service: &str, limit: usize) -> Option<Vec<Span>> {
+    pub fn get_spans_by_service(&self, service: &str, limit: usize) -> Vec<Span> {
         metrics::MEMTABLE_READS.inc();
-        self.services.get(service).map(|indices| {
-            indices
-                .iter()
-                .map(|&i| &self.spans[i])
-                .map(|entry: &Entry| &entry.span)
-                .take(limit)
-                .cloned()
-                .collect::<Vec<Span>>()
-        })
+        let Some(indices) = self.services.get(service)  else { return Vec::new() };
+        indices
+            .iter()
+            .map(|&i| &self.spans[i].span)
+            .take(limit)
+            .cloned()
+            .collect::<Vec<Span>>()
     }
 
     pub fn entries(&self) -> &Vec<Entry> {

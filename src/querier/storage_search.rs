@@ -6,6 +6,8 @@ use storage::span::Span;
 use storage::sstable_reader::SStableReader;
 use crate::querier::model::SearchRequest;
 
+type SearchResult<T> = Result<T, StorageError>;
+
 pub trait BlockStorageSearch {
 
     fn search(&self, query: &SearchRequest) -> Result<Vec<Span>, StorageError>;
@@ -25,7 +27,7 @@ impl LocalStorageSearch {
 
 impl BlockStorageSearch for LocalStorageSearch {
 
-    fn search(&self, query: &SearchRequest) -> Result<Vec<Span>, StorageError> {
+    fn search(&self, query: &SearchRequest) -> SearchResult<Vec<Span>> {
         let storage_meta = match self.storage.read_blocks_meta() {
             Ok(meta) => meta,
             Err(_) => {
@@ -43,33 +45,35 @@ impl BlockStorageSearch for LocalStorageSearch {
             let block_id = BlockId::new(block);
             let block_index = self.storage.read_block_index(&block_id)?;
 
-            let block_data = match query.trace_id {
+            let block_iterator = match query.trace_id {
                 Some(trace_id) => {
                     let Some(entry) = block_index.find_trace_id(&trace_id) else {
                         continue;
                     };
 
-                    self.storage.read_block_slice(&block_id, entry.offset(), entry.length())?
+                    self.storage.read_block_slice_iter(&block_id, entry.offset(), entry.length() as u64)?
                 },
-                None => self.storage.read_block(&block_id)?,
+                None => self.storage.read_block_iter(&block_id, 0)?,
             };
 
-            let block_spans = block_data.spans();
-            let spans = block_spans.iter()
-                .map(|entry| Span::deserialize(entry.payload().to_vec()))
-                .filter(|span| match &service_name {
-                    Some(service_name) => span.local_service.as_deref() == Some(service_name.as_str()),
-                    None => true,
-                })
-                .filter(|span| match &span_name {
-                    Some(name) => span.name == name.as_str(),
-                    None => true,
-                })
-                .collect::<Vec<Span>>();
-            trace_spans.extend(spans);
+            for entry in block_iterator {
+                if trace_spans.len() >= limit {
+                    break;
+                }
+                let span = Span::deserialize(&entry?.payload());
 
-            if trace_spans.len() >= limit {
-                break;
+                if let Some(svc) = &service_name {
+                    if span.local_service.as_deref() != Some(svc.as_str()) {
+                        continue;
+                    }
+                }
+
+                if let Some(name) = &span_name {
+                    if span.name != name.as_str() {
+                        continue;
+                    }
+                }
+                trace_spans.push(span);
             }
         }
 

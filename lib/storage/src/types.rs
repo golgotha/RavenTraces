@@ -25,7 +25,7 @@ impl Default for StorageConfig {
 impl Default for MemtableConfig {
     fn default() -> Self {
         Self {
-            max_size_bytes: 64 * 1024 * 1024,
+            max_size_bytes: 1 * 1024 * 1024,
             initial_capacity: 10000,
         }
     }

@@ -15,12 +15,14 @@ const INDEX_FILE_NAME: &str = "index.bin";
 const BLOCK_DATA_FILE_NAME: &str = "data.bin";
 const META_FILE_NAME: &str = "meta.json";
 
+type BlockStorageResult<T> = Result<T, StorageError>;
+
 pub trait BlockStorage: Send + Sync {
-    fn open(&mut self, id: &BlockId) -> Result<(), StorageError>;
+    fn open(&mut self, id: &BlockId) -> BlockStorageResult<()>;
 
-    fn write_block(&self, id: &BlockId, data: &[u8]) -> Result<(), StorageError>;
+    fn write_block(&self, id: &BlockId, data: &[u8]) -> BlockStorageResult<()>;
 
-    fn write_block_index(&self, id: &BlockId, index: &BlockIndex) -> Result<(), StorageError>;
+    fn write_block_index(&self, id: &BlockId, index: &BlockIndex) -> BlockStorageResult<()>;
 
     fn write_block_meta(
         &self,
@@ -35,15 +37,19 @@ pub trait BlockStorage: Send + Sync {
         size: u32,
     ) -> Result<Vec<u8>, StorageError>;
 
-    fn read_block(&self, block_id: &BlockId) -> Result<Vec<u8>, StorageError>;
+    fn read_block_bytes(&self, block_id: &BlockId) -> BlockStorageResult<Vec<u8>>;
 
-    fn read_block_index(&self, id: &BlockId) -> Result<BlockIndex, StorageError>;
+    fn read_block(&self, block_id: &BlockId, offset: u64) -> BlockStorageResult<Box<dyn Read + Send>>;
+    
+    fn read_block_len(&self, block_id: &BlockId, offset: u64, len: u64) -> BlockStorageResult<Box<dyn Read + Send>>;
 
-    fn list_blocks(&self) -> Result<Vec<BlockId>, StorageError>;
+    fn read_block_index(&self, id: &BlockId) -> BlockStorageResult<BlockIndex>;
 
-    fn read_storage_meta(&self) -> Result<StorageMeta, StorageError>;
+    fn list_blocks(&self) -> BlockStorageResult<Vec<BlockId>>;
 
-    fn write_storage_meta(&self, meta: &StorageMeta) -> Result<(), StorageError>;
+    fn read_storage_meta(&self) -> BlockStorageResult<StorageMeta>;
+
+    fn write_storage_meta(&self, meta: &StorageMeta) -> BlockStorageResult<()>;
 }
 
 #[derive(Debug)]
@@ -69,7 +75,7 @@ impl LocalBlockStorage {
         }
     }
 
-    fn create_data_file(&self, dir_path: &PathBuf) -> Result<File, StorageError> {
+    fn create_data_file(&self, dir_path: &PathBuf) -> BlockStorageResult<File> {
         let block_path = dir_path.join(BLOCK_DATA_FILE_NAME);
         let block_file = OpenOptions::new()
             .create(true)
@@ -79,7 +85,7 @@ impl LocalBlockStorage {
         Ok(block_file)
     }
 
-    fn create_bloom_filter_file(&self, dir_path: &PathBuf) -> Result<File, StorageError> {
+    fn create_bloom_filter_file(&self, dir_path: &PathBuf) -> BlockStorageResult<File> {
         let bloom_path = dir_path.join("bloom.bin");
         let bloom_file = OpenOptions::new()
             .create(true)
@@ -89,7 +95,7 @@ impl LocalBlockStorage {
         Ok(bloom_file)
     }
 
-    fn create_index_file(&self, dir_path: &PathBuf) -> Result<File, StorageError> {
+    fn create_index_file(&self, dir_path: &PathBuf) -> BlockStorageResult<File> {
         let index_path = dir_path.join(INDEX_FILE_NAME);
         let index_file = OpenOptions::new()
             .create(true)
@@ -101,7 +107,7 @@ impl LocalBlockStorage {
 }
 
 impl BlockStorage for LocalBlockStorage {
-    fn open(&mut self, id: &BlockId) -> Result<(), StorageError> {
+    fn open(&mut self, id: &BlockId) -> BlockStorageResult<()> {
         let block_dir_path = self.base_dir.join(BLOCKS_DIR_NAME).join(id.to_string());
 
         if !block_dir_path.exists() {
@@ -121,7 +127,7 @@ impl BlockStorage for LocalBlockStorage {
         Ok(())
     }
 
-    fn write_block(&self, id: &BlockId, data: &[u8]) -> Result<(), StorageError> {
+    fn write_block(&self, id: &BlockId, data: &[u8]) -> BlockStorageResult<()> {
         let _unused = self.mutex.lock().unwrap();
         let mut data_file = &self
             .current_block
@@ -230,7 +236,7 @@ impl BlockStorage for LocalBlockStorage {
         Ok(buffer)
     }
 
-    fn read_block(&self, block_id: &BlockId) -> Result<Vec<u8>, StorageError> {
+    fn read_block_bytes(&self, block_id: &BlockId) -> Result<Vec<u8>, StorageError> {
         let block_path = self
             .base_dir
             .join(BLOCKS_DIR_NAME)
@@ -250,6 +256,55 @@ impl BlockStorage for LocalBlockStorage {
         file.seek(SeekFrom::Start(0))?;
         file.read_exact(&mut buffer)?;
         Ok(buffer)
+    }
+
+    fn read_block(&self, block_id: &BlockId, offset: u64) -> BlockStorageResult<Box<dyn Read + Send>> {
+        let block_path = self
+            .base_dir
+            .join(BLOCKS_DIR_NAME)
+            .join(block_id.id.to_string())
+            .join(BLOCK_DATA_FILE_NAME);
+
+        if !block_path.exists() {
+            return Err(StorageError::NotFound(
+                format!("Block {} doesn't exist", block_id.id.to_string()).into(),
+            ));
+        }
+
+        let block_file_size = block_path.metadata()?.len();
+
+        let mut file = File::open(&block_path)?;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|e| StorageError::StorageReadError(e.to_string()))?;
+
+        Ok(Box::new(file.take(block_file_size)))
+    }
+
+    fn read_block_len(&self, block_id: &BlockId, offset: u64, len: u64) -> BlockStorageResult<Box<dyn Read + Send>> {
+        let block_path = self
+            .base_dir
+            .join(BLOCKS_DIR_NAME)
+            .join(block_id.id.to_string())
+            .join(BLOCK_DATA_FILE_NAME);
+
+        if !block_path.exists() {
+            return Err(StorageError::NotFound(
+                format!("Block {} doesn't exist", block_id.id.to_string()).into(),
+            ));
+        }
+
+        let block_file_size = block_path.metadata()?.len();
+        if len > block_file_size {
+            return Err(StorageError::BlockReadError(
+                format!("Block size {} is less that len {}", block_file_size, len).into(),
+            ));
+        }
+
+        let mut file = File::open(&block_path)?;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|e| StorageError::StorageReadError(e.to_string()))?;
+
+        Ok(Box::new(file.take(len)))
     }
 
     fn read_block_index(&self, block_id: &BlockId) -> Result<BlockIndex, StorageError> {

@@ -84,7 +84,7 @@ mod tests {
         let spans = data_block.spans();
         assert_eq!(spans.len(), 1);
         assert_eq!(spans.get(0).unwrap().size(), payload_size as u32);
-        let actual_span = Span::deserialize(spans.get(0).unwrap().payload().to_vec());
+        let actual_span = Span::deserialize(&spans.get(0).unwrap().payload());
         assert_eq!(actual_span.span_id, span_id);
         assert_eq!(actual_span.trace_id, trace_id);
         assert_eq!(actual_span.parent_span_id, span.parent_span_id);
@@ -133,7 +133,7 @@ mod tests {
         let block_entries = data_block.spans();
         assert_eq!(block_entries.len(), 3);
         let actual_entry = block_entries.get(1).unwrap();
-        let actual_span = Span::deserialize(actual_entry.payload().to_vec());
+        let actual_span = Span::deserialize(&actual_entry.payload());
 
         let expected_span = expected_spans.get(1).unwrap();
         assert_eq!(actual_span.span_id, expected_span.span_id);

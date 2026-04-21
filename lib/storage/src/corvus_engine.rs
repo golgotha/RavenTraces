@@ -124,7 +124,7 @@ impl CorvusEngine for CorvusEngineImpl {
 
         entries.into_iter().for_each(|entry| {
             if let Some(payload) = entry.payload {
-                let span = Span::deserialize(payload);
+                let span = Span::deserialize(&payload);
                 let trace_id = span.trace_id.clone();
                 mem_table.insert(&trace_id, &span, entry.segment_id);
             }
