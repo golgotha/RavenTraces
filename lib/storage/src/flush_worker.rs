@@ -6,7 +6,9 @@ use crate::span::{Span, TraceId};
 use crate::sstable_writer::{SStableWriter, SStableWriterImpl};
 use log::{debug, info};
 use std::collections::HashMap;
+use std::time::Instant;
 use wal::wal::WAL;
+use metrics::metrics;
 
 pub trait FlushWorker: Send + Sync {
 
@@ -36,6 +38,7 @@ impl FlushWorker for DiskFlushWorker {
 
     fn flush(&mut self, wal: &mut WAL, memtable: &mut Memtable) -> Result<(), StorageError> {
         info!("Flushing memtable");
+        let flush_start_time = Instant::now();
         let max_segment_id = memtable.max_segment_id();
         let entries = memtable.entries();
 
@@ -137,8 +140,10 @@ impl FlushWorker for DiskFlushWorker {
 
         wal.checkpoint(max_segment_id)
             .expect("cannot checkpoint out WAL");
-        memtable.clear();
-        // wal.cleanup().expect("Error occurred during WAL cleanup");
+        metrics::MEMTABLE_ENTRIES.set(0);
+        metrics::MEMTABLE_SIZE_BYTES.set(0);
+        metrics::MEMTABLE_FLUSHES.inc();
+        metrics::MEMTABLE_FLUSH_DURATION_MS.inc_by(flush_start_time.elapsed().as_millis() as u64);
         Ok(())
     }
 }

@@ -1,3 +1,4 @@
+use std::io::{BufReader, Read};
 use std::path::PathBuf;
 use std::sync::Arc;
 use common::binary_readers::{read_n_bytes, read_u32};
@@ -6,16 +7,28 @@ use crate::block::{BlockEntry, BlockId, DataBlock, DataBlockBuilder, StorageMeta
 use crate::block_index::BlockIndex;
 use crate::block_storage::{BlockStorage, LocalBlockStorage};
 use crate::errors::StorageError;
+use crate::readers::reader_utils::{read_exact_bytes, try_read_u32};
+
+type BlockIteratorResult = Result<Box<dyn Iterator<Item = Result<BlockEntry, StorageError>> + Send>, StorageError>;
 
 pub trait SStableReader {
 
     fn read_block_slice(&self, block_id: &BlockId, offset: u64, size: u32) -> Result<DataBlock, StorageError>;
+    
+    fn read_block_slice_iter(&self, block_id: &BlockId, offset: u64, size: u64) -> BlockIteratorResult;
 
     fn read_block(&self, block_id: &BlockId) -> Result<DataBlock, StorageError>;
+
+    fn read_block_iter(&self, block_id: &BlockId, offset: u64) -> BlockIteratorResult;
 
     fn read_block_index(&self, block_id: &BlockId) -> Result<BlockIndex, StorageError>;
 
     fn read_blocks_meta(&self) -> Result<StorageMeta, StorageError>;
+}
+
+pub struct BlockEntryIterator<R: Read> {
+    reader: BufReader<R>,
+    finished: bool,
 }
 
 pub struct SStableReaderImpl {
@@ -26,6 +39,48 @@ impl SStableReaderImpl {
     pub fn new(base_dir: PathBuf) -> Self {
         Self {
             storage: Box::new(LocalBlockStorage::new(base_dir)),
+        }
+    }
+}
+
+impl<R: Read> BlockEntryIterator<R> {
+    pub fn new(reader: R) -> Self {
+        Self {
+            reader: BufReader::new(reader),
+            finished: false,
+        }
+    }
+}
+
+impl<R: Read> Iterator for BlockEntryIterator<R> {
+    type Item = Result<BlockEntry, StorageError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+
+        let payload_size = match try_read_u32(&mut self.reader) {
+            Ok(Some(size)) => size,
+            Ok(None) => {
+                self.finished = true;
+                return None;
+            }
+            Err(e) => {
+                self.finished = true;
+                return Some(Err(e));
+            }
+        };
+
+        match read_exact_bytes(&mut self.reader, payload_size as usize) {
+            Ok(payload) => {
+                let entry = BlockEntry::new(payload_size, Arc::from(payload));
+                Some(Ok(entry))
+            }
+            Err(e) => {
+                self.finished = true;
+                Some(Err(e))
+            }
         }
     }
 }
@@ -44,8 +99,14 @@ impl SStableReader for SStableReaderImpl {
         Ok(data_block)
     }
 
+    fn read_block_slice_iter(&self, block_id: &BlockId, offset: u64, size: u64) -> BlockIteratorResult {
+        let reader = self.storage.read_block_len(block_id, offset, size)?;
+        let iterator = BlockEntryIterator::new(reader);
+        Ok(Box::new(iterator))
+    }
+
     fn read_block(&self, block_id: &BlockId) -> Result<DataBlock, StorageError> {
-        let block_bytes= self.storage.read_block(block_id)?;
+        let block_bytes= self.storage.read_block_bytes(block_id)?;
         let block_size = block_bytes.len();
 
         let mut offset = 0;
@@ -62,6 +123,12 @@ impl SStableReader for SStableReaderImpl {
 
         let data_block = block_builder.build();
         Ok(data_block)
+    }
+
+    fn read_block_iter(&self, block_id: &BlockId, offset: u64) -> BlockIteratorResult {
+        let reader = self.storage.read_block(block_id, offset)?;
+        let iterator = BlockEntryIterator::new(reader);
+        Ok(Box::new(iterator))
     }
 
     fn read_block_index(&self, block_id: &BlockId) -> Result<BlockIndex, StorageError> {

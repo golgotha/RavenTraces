@@ -384,7 +384,7 @@ impl Span {
         buffer
     }
 
-    pub fn deserialize(vector: Vec<u8>) -> Span {
+    pub fn deserialize(vector: &[u8]) -> Span {
         let mut offset = 0;
         let trace_id = read_bytes::<16>(&vector, &mut offset);
         let span_id = read_bytes::<8>(&vector, &mut offset);

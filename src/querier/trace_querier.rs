@@ -5,8 +5,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use storage::block::BlockId;
-use storage::block_index;
-use storage::block_index::BlockIndexEntry;
 use storage::errors::StorageError;
 use storage::memtable::{Entry, Memtable};
 use storage::span::{Span, TraceId};
@@ -72,11 +70,11 @@ impl TraceQuerier {
                 return vec![];
             },
         };
-        let mem_table_spans = read_mem_table.get_index(trace_id);
+        let mem_spans = read_mem_table.get_index(trace_id);
         let block_storage_spans: Vec<Span> = self.storage_search.search(&SearchRequest::for_trace_id(trace_id))
             .expect("An error occurred. Can not search for block storage");
 
-        let spans = merge_spans(mem_table_spans, block_storage_spans);
+        let spans = merge_spans(mem_spans, block_storage_spans);
         spans
     }
 
@@ -94,8 +92,7 @@ impl TraceQuerier {
             Some(service_name) => self.mem_table
                 .read()
                 .unwrap()
-                .get_spans_by_service(&service_name, limit)
-                .unwrap_or_default(),
+                .get_spans_by_service(&service_name, limit),
             None =>  self.mem_table
                 .read()
                 .unwrap()
@@ -165,7 +162,7 @@ fn read_block_entries(data: &Vec<u8>) -> Vec<Span> {
     while offset < data.len() {
         let payload_size = read_u32(data, &mut offset).unwrap();
         let payload = read_n_bytes(data, &mut offset, payload_size as usize);
-        let span = Span::deserialize(payload);
+        let span = Span::deserialize(&payload);
         spans.push(span);
     }
 

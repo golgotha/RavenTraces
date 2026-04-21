@@ -6,6 +6,7 @@ use actix_web_prom::PrometheusMetricsBuilder;
 use log::info;
 use std::io;
 use std::sync::Mutex;
+use metrics::metrics;
 use crate::settings::Settings;
 use crate::api::zipkin::zipkin_api::{post_zipkin_span, get_zipkin_services,
                                      get_zipkin_spans, get_zipkin_trace, get_zipkin_traces};
@@ -40,6 +41,8 @@ pub fn init(
                     .endpoint("/metrics")
                     .build()
                     .unwrap();
+
+                metrics::register_metrics(&prometheus.registry);
 
                 let app = App::new()
                     .wrap(Logger::default())

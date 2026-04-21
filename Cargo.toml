@@ -15,9 +15,12 @@ readme = "README.md"
 common = { path = "lib/common" }
 storage = { path = "lib/storage" }
 wal = { path = "lib/wal"}
+metrics = {path = "lib/metrics"}
 
 actix-web = "4.13.0"
 actix-web-prom = "0.10.0"
+prometheus = "0.14.0"
+lazy_static = "1.5.0"
 flexi_logger = "0.31"
 log = "0.4.29"
 colored = "3.1.1"
@@ -29,7 +32,7 @@ validator = "0.20.0"
 
 [workspace]
 members = [
-    "lib/common",
+    "lib/common", "lib/metrics",
     "lib/storage",
     "lib/wal",
 ]
