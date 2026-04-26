@@ -6,6 +6,7 @@ use crate::querier::zipkin_querier::ZipkinQuerier;
 use actix_web::{HttpResponse, get, post, web};
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
+use actix_web::http::StatusCode;
 use storage::span::Span;
 
 #[post("/api/v2/spans")]
@@ -17,7 +18,7 @@ async fn post_zipkin_span(
     let mut distributor = distributor.lock().unwrap();
     distributor.deliver(&unified_spans_vec);
 
-    HttpResponse::Ok().finish()
+    HttpResponse::Ok().status(StatusCode::OK).finish()
 }
 
 #[get("/api/v2/trace/{id}")]

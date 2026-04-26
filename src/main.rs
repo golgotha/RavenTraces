@@ -30,7 +30,7 @@ fn main() {
     let mem_table_config = settings.storage_config.mem_table.clone();
     let corvus_engine_config = CorvusEngineConfig { mem_table_config };
 
-    let mem_table = Memtable::new(corvus_engine_config.mem_table_config.clone());
+    let mem_table = Memtable::new(corvus_engine_config.mem_table_config.clone(), 1);
     let mem_table = Arc::new(RwLock::new(mem_table));
     let blocks_path = Path::new(data_dir.as_str()).to_path_buf();
 

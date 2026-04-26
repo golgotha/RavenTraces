@@ -1,9 +1,9 @@
-use std::usize;
-use log::error;
+use log::{debug, error, trace};
 use storage::block::BlockId;
+use storage::bloom::bloom_filter::BloomFilter;
 use storage::errors::StorageError;
-use storage::span::Span;
-use storage::sstable_reader::SStableReader;
+use storage::span::{Span};
+use storage::sstable_reader::{SStableReader};
 use crate::querier::model::SearchRequest;
 
 type SearchResult<T> = Result<T, StorageError>;
@@ -43,15 +43,24 @@ impl BlockStorageSearch for LocalStorageSearch {
         let mut trace_spans: Vec<Span> = Vec::new();
         for block in storage_meta.blocks {
             let block_id = BlockId::new(block);
-            let block_index = self.storage.read_block_index(&block_id)?;
 
             let block_iterator = match query.trace_id {
                 Some(trace_id) => {
-                    let Some(entry) = block_index.find_trace_id(&trace_id) else {
-                        continue;
-                    };
+                    let bloom_filter = self.storage.read_bloom_filter(&block_id)?;
 
-                    self.storage.read_block_slice_iter(&block_id, entry.offset(), entry.length() as u64)?
+                    if bloom_filter.might_contain(&trace_id) {
+                        debug!("Trace found in bloom filter in block {}", block_id.id);
+                        let block_index = self.storage.read_block_index(&block_id)?;
+                        let Some(entry) = block_index.find_trace_id(&trace_id) else {
+                            continue;
+                        };
+
+                        self.storage.read_block_slice_iter(&block_id, entry.offset(), entry.length() as u64)?
+                    } else {
+                        // no trace in block, go to the next block
+                        trace!("No trace found in bloom filter in block {}. Move to the next block", block_id.id);
+                        continue
+                    }
                 },
                 None => self.storage.read_block_iter(&block_id, 0)?,
             };

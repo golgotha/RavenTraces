@@ -23,6 +23,7 @@ pub struct Settings {
     pub log_dir: String,
     pub data_dir: String,
     pub service: ServiceConfig,
+    #[serde(rename = "storage")]
     pub storage_config: StorageConfig,
     pub tls: Option<TlsConfig>,
 }

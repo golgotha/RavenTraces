@@ -45,7 +45,7 @@ pub fn init(
                 metrics::register_metrics(&prometheus.registry);
 
                 let app = App::new()
-                    .wrap(Logger::default())
+                    // .wrap(Logger::default())
                     .wrap(Compress::default())
                     .wrap(NormalizePath::trim())
                     .wrap(prometheus)
