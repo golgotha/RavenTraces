@@ -1,3 +1,5 @@
+extern crate core;
+
 pub mod span;
 pub mod memtable;
 pub mod sstable_writer;
@@ -10,4 +12,5 @@ pub mod readers;
 pub mod corvus_engine;
 pub mod types;
 pub mod sstable_reader;
+pub mod bloom;
 

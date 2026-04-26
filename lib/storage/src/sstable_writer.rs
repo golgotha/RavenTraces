@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use log::info;
 use common::serialization::Writable;
-use crate::block::{BlockId, BlockMeta, DataBlock, StorageMeta};
+use crate::block::{BlockId, BlockMeta, BloomFilterBlock, DataBlock, StorageMeta};
 use crate::block_index::BlockIndex;
 use crate::block_storage::{BlockStorage, LocalBlockStorage};
 use crate::errors::StorageError;
@@ -11,6 +11,8 @@ pub trait SStableWriter {
     fn write_block(&mut self, block: &DataBlock) -> Result<usize, StorageError>;
 
     fn flush_index(&self, block_metadata: &BlockMeta, block_index: &BlockIndex) -> Result<(), StorageError>;
+    
+    fn flush_bloom_filter(&self, block_metadata: &BlockMeta, bloom_filter: &BloomFilterBlock) -> Result<(), StorageError>;
 
 }
 
@@ -72,6 +74,11 @@ impl SStableWriter for SStableWriterImpl {
         let block_id = block_metadata.id.clone();
         self.storage.write_block_index(&block_id, block_index)?;
         self.storage.write_block_meta(&block_id, block_metadata)?;
+        Ok(())
+    }
+
+    fn flush_bloom_filter(&self, block_metadata: &BlockMeta, bloom_filter: &BloomFilterBlock) -> Result<(), StorageError> {
+        self.storage.write_bloom_filter(&block_metadata.id, &bloom_filter)?;
         Ok(())
     }
 }

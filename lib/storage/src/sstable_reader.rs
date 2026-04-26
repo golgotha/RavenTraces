@@ -6,10 +6,11 @@ use common::serialization::Readable;
 use crate::block::{BlockEntry, BlockId, DataBlock, DataBlockBuilder, StorageMeta};
 use crate::block_index::BlockIndex;
 use crate::block_storage::{BlockStorage, LocalBlockStorage};
+use crate::bloom::bloom_filter::BloomFilterImpl;
 use crate::errors::StorageError;
 use crate::readers::reader_utils::{read_exact_bytes, try_read_u32};
 
-type BlockIteratorResult = Result<Box<dyn Iterator<Item = Result<BlockEntry, StorageError>> + Send>, StorageError>;
+pub type BlockIteratorResult = Result<Box<dyn Iterator<Item = Result<BlockEntry, StorageError>> + Send>, StorageError>;
 
 pub trait SStableReader {
 
@@ -22,6 +23,8 @@ pub trait SStableReader {
     fn read_block_iter(&self, block_id: &BlockId, offset: u64) -> BlockIteratorResult;
 
     fn read_block_index(&self, block_id: &BlockId) -> Result<BlockIndex, StorageError>;
+    
+    fn read_bloom_filter(&self, block_id: &BlockId) -> Result<BloomFilterImpl, StorageError>;
 
     fn read_blocks_meta(&self) -> Result<StorageMeta, StorageError>;
 }
@@ -133,6 +136,12 @@ impl SStableReader for SStableReaderImpl {
 
     fn read_block_index(&self, block_id: &BlockId) -> Result<BlockIndex, StorageError> {
         self.storage.read_block_index(block_id)
+    }
+
+    fn read_bloom_filter(&self, block_id: &BlockId) -> Result<BloomFilterImpl, StorageError> {
+        let bloom_filter_block = self.storage.read_bloom_filter(block_id)?;
+        let bloom_filter = bloom_filter_block.get_filter();
+        Ok(bloom_filter)
     }
 
     fn read_blocks_meta(&self) -> Result<StorageMeta, StorageError> {

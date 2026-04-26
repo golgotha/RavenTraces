@@ -6,6 +6,7 @@ use crate::readers::event_attribute_reader::read_span_events;
 use crate::readers::local_service_reader::read_local_service;
 use crate::readers::span_attibute_reader::read_attributes;
 use common::binary_readers::{read_bytes, read_string, read_u64, read_u8};
+use common::serialization::Writable;
 use crate::readers::status_code_reader::read_status_code;
 use crate::readers::status_message_reader::read_status_message;
 
@@ -79,7 +80,7 @@ impl Display for SpanKind {
     }
 }
 
-impl fmt::Display for AttributeValue {
+impl Display for AttributeValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AttributeValue::String(s) => write!(f, "\"{}\"", s),
@@ -193,6 +194,12 @@ impl Display for TraceId {
 
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.to_hex())
+    }
+}
+
+impl Writable for TraceId {
+    fn serialize(&self) -> Vec<u8> {
+        self.0[..].to_vec()
     }
 }
 

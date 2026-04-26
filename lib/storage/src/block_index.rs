@@ -122,12 +122,6 @@ impl BlockIndexEntryBuilder {
         let offset = self.offset.unwrap_or(0);
         let length = self.length.unwrap_or(0);
 
-        if let Some(length) = self.length
-            && length < 0
-        {
-            return Err("Length must be greater than 0".into());
-        }
-
         Ok(BlockIndexEntry {
             trace_id,
             offset,

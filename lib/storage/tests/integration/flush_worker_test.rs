@@ -6,13 +6,16 @@ mod tests {
     use tempfile::TempDir;
     use common::binary_readers::{read_n_bytes, read_u32};
     use storage::block_storage::{BlockStorage, LocalBlockStorage};
+    use storage::bloom::bloom_filter::BloomFilter;
     use storage::flush_worker::{DiskFlushWorker, FlushWorker};
     use storage::memtable::Memtable;
     use storage::span::{AttributeValue, Span, SpanId, SpanKind, TraceId};
     use storage::sstable_writer::SStableWriterImpl;
     use storage::types::MemtableConfig;
     use wal::wal::WAL;
-    
+
+    const TOTAL_TRACES: usize = 100;
+
     fn temp_dir() -> TempDir {
         tempfile::tempdir().expect("failed to create temp dir")
     }
@@ -25,6 +28,10 @@ mod tests {
                 .expect("Can not remove test dir");
         }
 
+        println!("Test dir: {}", dir.path().display());
+        println!("{}", generate_span_id());
+        println!("{}", generate_trace_id());
+
         let dir_path = Path::new(dir.path());
         let mut wal = WAL::open(dir_path).expect("could not open traces.wal");
 
@@ -32,20 +39,17 @@ mod tests {
             max_size_bytes: 1024,
             initial_capacity: 2,
         };
-        let mut memtable = Memtable::new(config);
 
-        let trace_id_1 = TraceId::from_str("69d42ce0d381bd1be42e50d0571cc5bf").unwrap();
-        let trace_id_2 = TraceId::from_str("69d42ce0d381bd1be42e50d0571cc5ba").unwrap();
-        let span_id_1 = SpanId::from_str("69d42ce0d381bd1a").unwrap();
-        let span_id_2 = SpanId::from_str("69d42ce0d381bd1b").unwrap();
-        let span_id_3 = SpanId::from_str("69d42ce0d381bd1c").unwrap();
-        let span_1 = make_span(trace_id_1, span_id_1);
-        let span_2 = make_span(trace_id_1, span_id_2);
-        let span_3 = make_span(trace_id_2, span_id_3);
+        let mut memtable = Memtable::new(config, 1);
+        let mut traces: Vec<TraceId> = Vec::new();
 
-        memtable.insert(&trace_id_1, &span_1, 1);
-        // memtable.insert(&trace_id_1, span_2, 1);
-        // memtable.insert(&trace_id_2, span_3, 1);
+        for i in 0..TOTAL_TRACES {
+            let trace_id  = TraceId::from_str(generate_trace_id().as_str()).unwrap();
+            let span_id = SpanId::from_str(generate_span_id().as_str()).unwrap();
+            let span = make_span(trace_id, span_id);
+            memtable.insert(&trace_id, &span, 1);
+            traces.push(trace_id);
+        }
 
         let table_writer = SStableWriterImpl::new(dir_path.to_path_buf());
         let mut flusher = DiskFlushWorker::new(table_writer, 64 * 1024);
@@ -60,8 +64,15 @@ mod tests {
         let block_id = blocks_list.get(0).unwrap();
         let block_index = storage.read_block_index(&block_id).unwrap();
 
+        let bloom_filter_block_res = storage.read_bloom_filter(&block_id);
+        assert!(bloom_filter_block_res.is_ok());
+        let bloom_filter_block = bloom_filter_block_res.unwrap();
+        let bloom_filter = bloom_filter_block.get_filter();
+        let actual_prediction = bloom_filter.might_contain(traces.get(0).unwrap());
+        assert_eq!(actual_prediction, true, "Trace might be in bloom filter");
+
         let index_entries = block_index.entries();
-        assert_eq!(index_entries.len(), 1);
+        assert_eq!(index_entries.len(), TOTAL_TRACES);
 
         for entry in index_entries.values() {
             let offset = entry.offset();
@@ -70,10 +81,22 @@ mod tests {
             assert!(block_result.is_ok());
             let block_data = block_result.unwrap();
             let spans: Vec<Span> = read_block_entries(&block_data);
-            assert_eq!(spans.len(), 1);
+            assert!(spans.len() > 0);
         }
 
         // assert_checkpoint();
+    }
+
+    #[test]
+    fn generate_ids_for_test() {
+        let trace_id = generate_trace_id();
+        let span_id = generate_span_id();
+
+        println!("trace_id = {}", trace_id);
+        println!("span_id = {}", span_id);
+
+        assert_eq!(trace_id.len(), 32);
+        assert_eq!(span_id.len(), 16);
     }
 
     fn make_span(trace_id: TraceId, span_id: SpanId) -> Span {
@@ -109,5 +132,16 @@ mod tests {
         }
 
         spans
+    }
+
+    fn generate_span_id() -> String {
+        let id: u64 = rand::random();
+        format!("{:016x}", id)
+    }
+
+    fn generate_trace_id() -> String {
+        let part_1 = generate_span_id();
+        let part_2 = generate_span_id();
+        format!("{}{}", part_1, part_2)
     }
 }
