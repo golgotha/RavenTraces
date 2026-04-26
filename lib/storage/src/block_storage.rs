@@ -1,8 +1,8 @@
-use crate::block::{BlockId, BlockMeta, StorageMeta};
+use crate::block::{BlockId, BlockMeta, BloomFilterBlock, StorageMeta};
 use crate::block_index::{BlockIndex, BlockIndexEntry};
 use crate::errors::StorageError;
 use common::serialization::{Readable, Writable};
-use log::info;
+use log::{debug, info};
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
@@ -12,6 +12,7 @@ use std::sync::Mutex;
 
 const BLOCKS_DIR_NAME: &str = "blocks";
 const INDEX_FILE_NAME: &str = "index.bin";
+const BLOOM_FILTER_FILE_NAME: &str = "bloom.bin";
 const BLOCK_DATA_FILE_NAME: &str = "data.bin";
 const META_FILE_NAME: &str = "meta.json";
 
@@ -30,6 +31,10 @@ pub trait BlockStorage: Send + Sync {
         block_meta: &BlockMeta,
     ) -> Result<(), StorageError>;
 
+    fn write_storage_meta(&self, meta: &StorageMeta) -> BlockStorageResult<()>;
+
+    fn write_bloom_filter(&self, block_id: &BlockId, bloom_filter: &BloomFilterBlock) -> BlockStorageResult<()>;
+
     fn read_block_at(
         &self,
         block_id: &BlockId,
@@ -45,11 +50,12 @@ pub trait BlockStorage: Send + Sync {
 
     fn read_block_index(&self, id: &BlockId) -> BlockStorageResult<BlockIndex>;
 
+    fn read_bloom_filter(&self, id: &BlockId) -> BlockStorageResult<BloomFilterBlock>;
+
     fn list_blocks(&self) -> BlockStorageResult<Vec<BlockId>>;
 
     fn read_storage_meta(&self) -> BlockStorageResult<StorageMeta>;
 
-    fn write_storage_meta(&self, meta: &StorageMeta) -> BlockStorageResult<()>;
 }
 
 #[derive(Debug)]
@@ -86,7 +92,7 @@ impl LocalBlockStorage {
     }
 
     fn create_bloom_filter_file(&self, dir_path: &PathBuf) -> BlockStorageResult<File> {
-        let bloom_path = dir_path.join("bloom.bin");
+        let bloom_path = dir_path.join(BLOOM_FILTER_FILE_NAME);
         let bloom_file = OpenOptions::new()
             .create(true)
             .read(true)
@@ -115,27 +121,20 @@ impl BlockStorage for LocalBlockStorage {
             fs::create_dir_all(&block_dir_path)?;
         }
 
-        let data_file = self.create_data_file(&block_dir_path)?;
-        let bloom_file = self.create_bloom_filter_file(&block_dir_path)?;
-        let index_file = self.create_index_file(&block_dir_path)?;
-        let block_ref = BlockReference {
-            data_file,
-            bloom_file,
-            index_file,
-        };
-        self.current_block = Some(Mutex::new(block_ref));
         Ok(())
     }
 
     fn write_block(&self, id: &BlockId, data: &[u8]) -> BlockStorageResult<()> {
         let _unused = self.mutex.lock().unwrap();
-        let mut data_file = &self
-            .current_block
-            .as_ref()
-            .unwrap()
-            .lock()
-            .unwrap()
-            .data_file;
+
+        let block_dir_path = self.base_dir.join(BLOCKS_DIR_NAME).join(id.to_string());
+
+        if !block_dir_path.exists() {
+            info!("Create {:?} directory. ", &block_dir_path);
+            fs::create_dir_all(&block_dir_path)?;
+        }
+
+        let mut data_file = self.create_data_file(&block_dir_path)?;
         data_file.write(data)?;
         data_file.flush()?;
         Ok(())
@@ -157,15 +156,17 @@ impl BlockStorage for LocalBlockStorage {
             .flatten()
             .collect();
 
-        let mut data_file = &self
-            .current_block
-            .as_ref()
-            .unwrap()
-            .lock()
-            .unwrap()
-            .index_file;
-        data_file.write(&data_vec)?;
-        data_file.flush()?;
+        let block_dir_path = self.base_dir.join(BLOCKS_DIR_NAME).join(block_id.to_string());
+
+        if !block_dir_path.exists() {
+            info!("Create {:?} directory. ", &block_dir_path);
+            fs::create_dir_all(&block_dir_path)?;
+        }
+
+        let mut index_file = self.create_index_file(&block_dir_path)?;
+
+        index_file.write(&data_vec)?;
+        index_file.flush()?;
         Ok(())
     }
 
@@ -197,6 +198,46 @@ impl BlockStorage for LocalBlockStorage {
 
         let bytes = json_string.into_bytes();
         meta_file.write(&bytes)?;
+        Ok(())
+    }
+
+    fn write_storage_meta(&self, meta: &StorageMeta) -> Result<(), StorageError> {
+        let meta_path = self.base_dir.join(BLOCKS_DIR_NAME).join("meta.json");
+
+        let mut meta_file: File;
+        if !meta_path.exists() {
+            info!("Meta storage doesn't exist. Create a new one.");
+            meta_file = OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .open(&meta_path)?;
+        } else {
+            meta_file = File::create(&meta_path)?
+        }
+
+        let json_string = serde_json::to_string(meta).unwrap();
+        let bytes = json_string.into_bytes();
+        meta_file.write(&bytes)?;
+
+        Ok(())
+    }
+
+    fn write_bloom_filter(&self, block_id: &BlockId, bloom_filter: &BloomFilterBlock) -> BlockStorageResult<()> {
+        let _guard = self.mutex.lock().unwrap();
+
+        let block_dir_path = self.base_dir.join(BLOCKS_DIR_NAME).join(block_id.to_string());
+
+        if !block_dir_path.exists() {
+            info!("Create {:?} directory. ", &block_dir_path);
+            fs::create_dir_all(&block_dir_path)?;
+        }
+
+        let mut bloom_file = self.create_bloom_filter_file(&block_dir_path)?;
+
+        let bloom_vector = bloom_filter.serialize();
+        bloom_file.write(&bloom_vector)?;
+        bloom_file.flush()?;
         Ok(())
     }
 
@@ -342,6 +383,32 @@ impl BlockStorage for LocalBlockStorage {
         Ok(block_index)
     }
 
+    fn read_bloom_filter(&self, block_id: &BlockId) -> BlockStorageResult<BloomFilterBlock> {
+        debug!("Reading bloom filter for block {}", block_id.id);
+        let bloom_filter_path = self
+            .base_dir
+            .join(BLOCKS_DIR_NAME)
+            .join(block_id.id.to_string())
+            .join(BLOOM_FILTER_FILE_NAME);
+
+        if !bloom_filter_path.exists() {
+            return Err(StorageError::NotFound(
+                format!("Bloom filter for block {} doesn't exist", block_id.id.to_string()).into(),
+            ));
+        }
+
+        let mut bloom_filter_file = File::open(&bloom_filter_path)?;
+        let file_size = bloom_filter_file.metadata()?.len();
+        let mut buffer = vec![0u8; file_size as usize];
+
+        bloom_filter_file.seek(SeekFrom::Start(0))?;
+        bloom_filter_file.read_exact(&mut buffer)?;
+        let bloom_filter_block = BloomFilterBlock::deserialize(&buffer)
+            .map_err(|e| StorageError::StorageReadError(e.to_string()))?;
+
+        Ok(bloom_filter_block)
+    }
+
     fn list_blocks(&self) -> Result<Vec<BlockId>, StorageError> {
         let blocks_path = self.base_dir.join(BLOCKS_DIR_NAME);
 
@@ -371,27 +438,5 @@ impl BlockStorage for LocalBlockStorage {
         let meta: StorageMeta = serde_json::from_reader(reader)
             .map_err(|e| StorageError::CorruptedEntry(format!("Can not open meta file: {}", e.to_string())))?;
         Ok(meta)
-    }
-
-    fn write_storage_meta(&self, meta: &StorageMeta) -> Result<(), StorageError> {
-        let meta_path = self.base_dir.join(BLOCKS_DIR_NAME).join("meta.json");
-
-        let mut meta_file: File;
-        if !meta_path.exists() {
-            info!("Meta storage doesn't exist. Create a new one.");
-            meta_file = OpenOptions::new()
-                .create(true)
-                .read(true)
-                .write(true)
-                .open(&meta_path)?;
-        } else {
-            meta_file = File::create(&meta_path)?
-        }
-
-        let json_string = serde_json::to_string(meta).unwrap();
-        let bytes = json_string.into_bytes();
-        meta_file.write(&bytes)?;
-
-        Ok(())
     }
 }

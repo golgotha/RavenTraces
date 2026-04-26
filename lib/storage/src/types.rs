@@ -16,7 +16,7 @@ pub struct StorageConfig {
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
-            max_block_size: 256 * 1024 * 1024,
+            max_block_size: 256 * 1024,
             mem_table: MemtableConfig::default(),
         }
     }

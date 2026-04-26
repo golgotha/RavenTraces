@@ -3,7 +3,6 @@ use crate::types::MemtableConfig;
 use indexmap::IndexSet;
 use log::{debug, info};
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
 use metrics::metrics;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -21,6 +20,7 @@ pub struct Entry {
 }
 
 pub struct Memtable {
+    generation: u64,
     config: MemtableConfig,
     spans: Vec<Entry>,
     trace_index: HashMap<TraceId, Vec<usize>>,
@@ -33,11 +33,12 @@ pub struct Memtable {
 }
 
 impl Memtable {
-    pub fn new(config: MemtableConfig) -> Memtable {
+    pub fn new(config: MemtableConfig, generation: u64) -> Memtable {
         let initial_capacity = config.initial_capacity;
         info!("Create Memtable with size: {}", initial_capacity);
 
         Memtable {
+            generation,
             config,
             spans: Vec::with_capacity(initial_capacity),
             trace_index: HashMap::new(),
@@ -50,10 +51,10 @@ impl Memtable {
         }
     }
 
-    pub fn next_memtable(&self) -> Memtable {
+    pub fn next_generation(&self) -> Memtable {
         let initial_capacity = self.config.initial_capacity;
         debug!("Create next Memtable version with size: {}", initial_capacity);
-        Memtable::new(self.config.clone())
+        Memtable::new(self.config.clone(), self.generation + 1)
     }
 
     pub fn insert(&mut self, trace_id: &TraceId, span: &Span, segment_id: u32) {
@@ -171,6 +172,10 @@ impl Memtable {
     pub fn services(&self) -> Vec<String> {
         self.services.keys().cloned().collect::<Vec<String>>()
     }
+    
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
 
     fn touch(&mut self, trace_id: &TraceId) {
         self.lru.shift_remove(trace_id);
@@ -225,7 +230,7 @@ mod tests {
     #[test]
     fn create_memtable() {
         let config = make_default_config();
-        let memtable = Memtable::new(config);
+        let memtable = Memtable::new(config, 1);
         assert_eq!(memtable.config.initial_capacity, 10)
     }
 
@@ -235,7 +240,7 @@ mod tests {
         let span_id: SpanId = SpanId(*b"5af7183f");
         let unified_span = make_unified_span(trace_id, span_id);
         let config = make_default_config();
-        let mut memtable = Memtable::new(config);
+        let mut memtable = Memtable::new(config, 1);
         memtable.insert(&trace_id, &unified_span, 1);
 
         assert_eq!(memtable.trace_index.len(), 1);
@@ -259,7 +264,7 @@ mod tests {
     #[test]
     fn get_index() {
         let config = make_default_config();
-        let mut memtable = Memtable::new(config);
+        let mut memtable = Memtable::new(config, 1);
         let trace_ids: [TraceId; 2] =
             [TraceId(*b"5af7183fb1d4cf5f"), TraceId(*b"6b221d5bc9e6496c")];
         let batch1: &[Span] = &[
@@ -315,7 +320,7 @@ mod tests {
                 max_size_bytes: 1024,
                 initial_capacity: 2,
             };
-            let mut m = Memtable::new(config);
+            let mut m = Memtable::new(config, 1);
             m.insert(
                 &tid(*b"5af7183fb1d4cf5f"),
                 &ptr(tid(*b"5af7183fb1d4cf5f")),
@@ -352,7 +357,7 @@ mod tests {
                 max_size_bytes: 1024,
                 initial_capacity: 2,
             };
-            let mut m = Memtable::new(config);
+            let mut m = Memtable::new(config, 1);
 
             m.insert(&trace_1, &ptr(trace_1), 1);
             m.insert(&trace_2, &ptr(trace_2), 1);

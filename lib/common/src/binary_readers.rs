@@ -21,6 +21,15 @@ pub fn read_u8(buf: &[u8], offset: &mut usize) -> Result<u8, String> {
     Ok(val)
 }
 
+pub fn read_u16(buf: &[u8], offset: &mut usize) -> Result<u16, String> {
+    if buf.len() < *offset + 2 {
+        return Err("buffer too small for u8 value".into());
+    }
+    let val = u16::from_le_bytes(buf[*offset..*offset + 2].try_into().unwrap());
+    *offset += 2;
+    Ok(val)
+}
+
 pub fn read_u32(buf: &[u8], offset: &mut usize) -> Result<u32, String> {
     if buf.len() < *offset + 4 {
         return Err("buffer too small for u32 value".into());

@@ -5,9 +5,9 @@ use crate::span::Span;
 use crate::sstable_writer::SStableWriterImpl;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
-use log::info;
+use log::{error, info};
 use serde::{Deserialize, Serialize};
-use wal::log_entry::LogEntry;
+use wal::log_entry::{LogEntry};
 use wal::wal::WAL;
 use crate::types::{MemtableConfig, StorageConfig};
 
@@ -102,10 +102,9 @@ impl CorvusEngine for CorvusEngineImpl {
         }
 
         if mem_table.should_flush() {
-            // let mut old_memtable = std::mem::replace(&mut *mem_table, Memtable::new(self.config.mem_table_config.clone()));
             let mut old_memtable = {
-                // let mut mem = mem_table.write().unwrap();
-                std::mem::replace(&mut *mem_table, Memtable::new(self.config.mem_table_config.clone()))
+                let next_memtable = mem_table.next_generation();
+                std::mem::replace(&mut *mem_table, next_memtable)
             };
             flush_worker
                 .flush(wal, &mut old_memtable)
@@ -118,9 +117,8 @@ impl CorvusEngine for CorvusEngineImpl {
     fn replay_wal(wal: &mut WAL, memtable: Arc<RwLock<Memtable>>) {
         let mut mem_table = memtable.write().unwrap();
         info!("Replaying WAL, it takes a while");
-        let entries = {
-            wal.replay().unwrap()
-        };
+        let entries = wal.replay()
+            .expect("Error while replaying WAL");
 
         entries.into_iter().for_each(|entry| {
             if let Some(payload) = entry.payload {

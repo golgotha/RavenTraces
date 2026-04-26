@@ -156,19 +156,6 @@ fn merge_spans(
     merged
 }
 
-fn read_block_entries(data: &Vec<u8>) -> Vec<Span> {
-    let mut offset = 0;
-    let mut spans = Vec::<Span>::new();
-    while offset < data.len() {
-        let payload_size = read_u32(data, &mut offset).unwrap();
-        let payload = read_n_bytes(data, &mut offset, payload_size as usize);
-        let span = Span::deserialize(&payload);
-        spans.push(span);
-    }
-
-    spans
-}
-
 impl BlockRef {
     pub fn new(block_id: BlockId, offset: u64, length: u32) -> Self {
         Self {
