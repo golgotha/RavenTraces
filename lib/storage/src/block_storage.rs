@@ -2,7 +2,7 @@ use crate::block::{BlockId, BlockMeta, BloomFilterBlock, StorageMeta};
 use crate::block_index::{BlockIndex, BlockIndexEntry};
 use crate::errors::StorageError;
 use common::serialization::{Readable, Writable};
-use log::{debug, info};
+use log::{info, trace};
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
@@ -33,7 +33,7 @@ pub trait BlockStorage: Send + Sync {
 
     fn write_storage_meta(&self, meta: &StorageMeta) -> BlockStorageResult<()>;
 
-    fn write_bloom_filter(&self, block_id: &BlockId, bloom_filter: &BloomFilterBlock) -> BlockStorageResult<()>;
+    fn write_bloom_filter(&self, block_id: &BlockId, bloom_filter: BloomFilterBlock) -> BlockStorageResult<()>;
 
     fn read_block_at(
         &self,
@@ -69,7 +69,6 @@ struct BlockReference {
 pub struct LocalBlockStorage {
     base_dir: PathBuf,
     current_block: Option<Mutex<BlockReference>>,
-    mutex: Mutex<u32>,
 }
 
 impl LocalBlockStorage {
@@ -77,7 +76,6 @@ impl LocalBlockStorage {
         LocalBlockStorage {
             base_dir: dir.as_ref().to_path_buf(),
             current_block: None,
-            mutex: Mutex::new(0),
         }
     }
 
@@ -117,7 +115,7 @@ impl BlockStorage for LocalBlockStorage {
         let block_dir_path = self.base_dir.join(BLOCKS_DIR_NAME).join(id.to_string());
 
         if !block_dir_path.exists() {
-            info!("Create {:?} directory. ", &block_dir_path);
+            trace!("Create {:?} directory. ", &block_dir_path);
             fs::create_dir_all(&block_dir_path)?;
         }
 
@@ -125,17 +123,15 @@ impl BlockStorage for LocalBlockStorage {
     }
 
     fn write_block(&self, id: &BlockId, data: &[u8]) -> BlockStorageResult<()> {
-        let _unused = self.mutex.lock().unwrap();
-
         let block_dir_path = self.base_dir.join(BLOCKS_DIR_NAME).join(id.to_string());
 
         if !block_dir_path.exists() {
-            info!("Create {:?} directory. ", &block_dir_path);
+            trace!("Create {:?} directory. ", &block_dir_path);
             fs::create_dir_all(&block_dir_path)?;
         }
 
         let mut data_file = self.create_data_file(&block_dir_path)?;
-        data_file.write(data)?;
+        data_file.write_all(data)?;
         data_file.flush()?;
         Ok(())
     }
@@ -145,9 +141,7 @@ impl BlockStorage for LocalBlockStorage {
         block_id: &BlockId,
         index: &BlockIndex,
     ) -> Result<(), StorageError> {
-        info!("Writing block index for id {}", block_id.id.to_string());
-        let _guard = self.mutex.lock().unwrap();
-
+        trace!("Writing block index for id {}", block_id.id.to_string());
         let data_vec: Vec<u8> = index
             .entries()
             .values()
@@ -159,7 +153,7 @@ impl BlockStorage for LocalBlockStorage {
         let block_dir_path = self.base_dir.join(BLOCKS_DIR_NAME).join(block_id.to_string());
 
         if !block_dir_path.exists() {
-            info!("Create {:?} directory. ", &block_dir_path);
+            trace!("Create {:?} directory. ", &block_dir_path);
             fs::create_dir_all(&block_dir_path)?;
         }
 
@@ -175,7 +169,6 @@ impl BlockStorage for LocalBlockStorage {
         block_id: &BlockId,
         block_meta: &BlockMeta,
     ) -> Result<(), StorageError> {
-        let _unused = self.mutex.lock().unwrap();
         let block_path = self
             .base_dir
             .join(BLOCKS_DIR_NAME)
@@ -218,25 +211,23 @@ impl BlockStorage for LocalBlockStorage {
 
         let json_string = serde_json::to_string(meta).unwrap();
         let bytes = json_string.into_bytes();
-        meta_file.write(&bytes)?;
+        meta_file.write_all(&bytes)?;
 
         Ok(())
     }
 
-    fn write_bloom_filter(&self, block_id: &BlockId, bloom_filter: &BloomFilterBlock) -> BlockStorageResult<()> {
-        let _guard = self.mutex.lock().unwrap();
-
+    fn write_bloom_filter(&self, block_id: &BlockId, bloom_filter: BloomFilterBlock) -> BlockStorageResult<()> {
         let block_dir_path = self.base_dir.join(BLOCKS_DIR_NAME).join(block_id.to_string());
 
         if !block_dir_path.exists() {
-            info!("Create {:?} directory. ", &block_dir_path);
+            trace!("Create {:?} directory. ", &block_dir_path);
             fs::create_dir_all(&block_dir_path)?;
         }
 
         let mut bloom_file = self.create_bloom_filter_file(&block_dir_path)?;
 
         let bloom_vector = bloom_filter.serialize();
-        bloom_file.write(&bloom_vector)?;
+        bloom_file.write_all(&bloom_vector)?;
         bloom_file.flush()?;
         Ok(())
     }
@@ -384,7 +375,7 @@ impl BlockStorage for LocalBlockStorage {
     }
 
     fn read_bloom_filter(&self, block_id: &BlockId) -> BlockStorageResult<BloomFilterBlock> {
-        debug!("Reading bloom filter for block {}", block_id.id);
+        trace!("Reading bloom filter for block {}", block_id.id);
         let bloom_filter_path = self
             .base_dir
             .join(BLOCKS_DIR_NAME)

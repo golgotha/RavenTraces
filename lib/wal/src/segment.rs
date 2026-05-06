@@ -55,6 +55,12 @@ pub struct Segment {
 }
 
 impl Segment {
+    pub(crate) fn segment_id(&self) -> u32 {
+        self.header.segment_id
+    }
+}
+
+impl Segment {
 
     /// Opens the segment file at the specified path.
     /// An individual file must only be opened by one segment at a time.
@@ -105,8 +111,8 @@ impl Segment {
         create_segment_storage(path, sequence)
     }
 
-    pub fn append<T: Writable>(&mut self, record: &T) -> Result<(), WalError> {
-        let n = self.storage.write(record)?;
+    pub fn append<T: Writable>(&mut self, record: T) -> Result<(), WalError> {
+        let n = self.storage.write(&record)?;
         let offset = self.size as usize;
         self.index.push((offset, n));
         self.size += n as u64;
@@ -468,7 +474,7 @@ mod tests {
             let size_before = seg.segment_size().unwrap();
 
             let record = TestRecord::new(b"hello world");
-            seg.append(&record).expect("append failed");
+            seg.append(record).expect("append failed");
 
             let size_after = seg.segment_size().unwrap();
             assert!(size_after > size_before, "size should grow after append");
@@ -481,7 +487,7 @@ mod tests {
 
             let mut prev = seg.segment_size().unwrap();
             for i in 0u8..5 {
-                seg.append(&TestRecord::new(&[i; 16])).expect("append failed");
+                seg.append(TestRecord::new(&[i; 16])).expect("append failed");
                 let curr = seg.segment_size().unwrap();
                 assert!(curr > prev, "size must strictly increase");
                 prev = curr;
@@ -493,7 +499,7 @@ mod tests {
             let dir = temp_dir();
             let mut seg = Segment::create(dir.path(), 512).expect("create failed");
             // An empty payload is unusual but should not panic.
-            seg.append(&TestRecord::new(b"")).expect("append of empty record failed");
+            seg.append(TestRecord::new(b"")).expect("append of empty record failed");
         }
     }
 
@@ -539,7 +545,7 @@ mod tests {
         fn next_segment_is_empty_initially() {
             let dir = temp_dir();
             let mut seg = Segment::create(dir.path(), 512).unwrap();
-            seg.append(&TestRecord::new(b"some data")).unwrap();
+            seg.append(TestRecord::new(b"some data")).unwrap();
 
             let next = seg.create_next_segment(dir.path()).unwrap();
             let expected = size_of::<SegmentHeader>() as u64;

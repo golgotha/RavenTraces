@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use storage::span::{AttributeValue, Span, SpanEvent, TraceId};
+use storage::search_request::SearchRequest;
+use storage::span::{AttributeValue, Span, SpanEvent, SpanKind, TraceId};
 use crate::api::zipkin::json_model::{ZipkinAnnotation, ZipkinEndpoint, ZipkinKind, ZipkinSpan};
-use crate::querier::model::SearchRequest;
 use crate::querier::querier::{Querier, QuerierError};
 use crate::querier::trace_querier::TraceQuerier;
 
@@ -38,8 +38,8 @@ impl Querier<ZipkinSpan> for ZipkinQuerier {
         Ok(spans)
     }
 
-    fn search_traces(&self, search_request: &SearchRequest) -> Result<Vec<ZipkinSpan>, QuerierError> {
-        let spans = self.trace_querier.search(&search_request)
+    fn search_traces(&self, search_request: SearchRequest) -> Result<Vec<ZipkinSpan>, QuerierError> {
+        let spans = self.trace_querier.search(search_request)
             .unwrap_or_default()
             .into_iter()
             .map(convert_span_to_zipkin)
@@ -76,19 +76,29 @@ fn convert_span_to_zipkin(span: Span) -> ZipkinSpan {
         .collect();
 
     let zipkin_kind = match span.kind {
-        storage::span::SpanKind::Internal => Some(ZipkinKind::Client),
-        storage::span::SpanKind::Client => Some(ZipkinKind::Client),
-        storage::span::SpanKind::Server => Some(ZipkinKind::Server),
-        storage::span::SpanKind::Producer => Some(ZipkinKind::Producer),
-        storage::span::SpanKind::Consumer => Some(ZipkinKind::Consumer),
+        SpanKind::Unspecified => None,
+        SpanKind::Internal => Some(ZipkinKind::Client),
+        SpanKind::Client => Some(ZipkinKind::Client),
+        SpanKind::Server => Some(ZipkinKind::Server),
+        SpanKind::Producer => Some(ZipkinKind::Producer),
+        SpanKind::Consumer => Some(ZipkinKind::Consumer),
     };
 
-    let local_endpoint = span.local_service.map(|endpoint| ZipkinEndpoint {
-        service_name: Some(endpoint),
-        ipv4: None,
+    let service_name = span.attributes.get("service.name")
+        .map(|value| value.to_string());
+    let service_address = span.attributes.get("server.address")
+        .map(|value| value.to_string());
+
+    let service_port = span.attributes.get("server.port")
+        .and_then(AttributeValue::as_int)
+        .and_then(|v| v.try_into().ok());
+
+    let local_endpoint = ZipkinEndpoint {
+        service_name,
+        ipv4: service_address,
         ipv6: None,
-        port: None,
-    });
+        port: service_port,
+    };
 
     let annotations = span.events
         .into_iter()
@@ -103,7 +113,7 @@ fn convert_span_to_zipkin(span: Span) -> ZipkinSpan {
         timestamp: span.timestamp,
         duration: span.duration,
         kind: zipkin_kind,
-        local_endpoint,
+        local_endpoint: Some(local_endpoint),
         remote_endpoint: None,
         tags: Some(tags),
         annotations: Some(annotations),

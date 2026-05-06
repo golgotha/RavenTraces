@@ -1,11 +1,14 @@
-use crate::bloom::bloom_filter::{BloomFilterImpl};
-use crate::span::TraceId;
+use crate::bloom::bloom_filter::{BloomFilter, BloomFilterImpl};
+use crate::span::{Span, TraceId};
 use common::binary_readers::{read_bytes, read_n_bytes, read_u16, read_u32, read_u64, read_u8};
 use common::serialization::{Readable, Writable};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
+use log::trace;
 use uuid::Uuid;
+use ulid::Ulid;
+use crate::block_index::{BlockIndex, BlockIndexEntry};
 
 const DEFAULT_VERSION: u8 = 1;
 
@@ -19,9 +22,11 @@ pub struct BlockId {
 
 #[derive(Debug)]
 pub struct DataBlock {
+    block_offset: usize,
     id: BlockId,
     entries: Vec<BlockEntry>,
     block_meta: BlockMeta,
+    block_index: BlockIndex,
 }
 
 #[derive(Debug)]
@@ -130,12 +135,16 @@ impl DataBlockBuilder {
     pub fn build(self) -> DataBlock {
         let block_id = self.id.unwrap();
         let entries = self.entries;
+        let min_ts = u64::MAX;
+        let max_ts = 0;
         let block_meta = self.block_meta.unwrap_or(BlockMeta::new(2));
 
         DataBlock {
+            block_offset: 0,
             id: block_id,
             entries,
             block_meta,
+            block_index: BlockIndex::new(),
         }
     }
 }
@@ -186,8 +195,9 @@ impl BlockIdBuilder {
 
 impl BlockMeta {
     pub fn new(max_block_size: usize) -> Self {
+
         Self {
-            id: BlockId::uuid(),
+            id: BlockId::ulid(),
             total_spans: 0,
             start_ts: 0,
             end_ts: 0,
@@ -239,19 +249,26 @@ impl BlockId {
     pub fn uuid() -> Self {
         Self::new(Uuid::now_v7().to_string())
     }
+
+    pub fn ulid() -> Self {
+        Self::new(Ulid::new().to_string())
+    }
 }
 
 impl DataBlock {
     pub fn new(max_block_size: usize) -> Self {
         let block_meta = BlockMeta::new(max_block_size);
+
         DataBlock {
+            block_offset: 0,
             id: block_meta.id.clone(),
             entries: Vec::new(),
             block_meta,
+            block_index: BlockIndex::new(),
         }
     }
 
-    pub fn add_span(&mut self, span: &[u8]) {
+    pub fn add_span(&mut self, trace_id: &TraceId, span: &Vec<u8>) {
         let payload_size = span.len();
         // payload size +  the size of the size u32
         // you can not to use size_of_val to evaluate the size
@@ -263,9 +280,21 @@ impl DataBlock {
 
         let entry = BlockEntry {
             size: payload_size as u32,
-            payload: Arc::from(span),
+            payload: Arc::from(span.as_slice()),
         };
         self.entries.push(entry);
+
+        let block_size = self.block_size();
+        trace!(
+                "Create index entry: offset: {}, size: {}",
+                self.block_offset, block_size
+            );
+        
+        let spans_block_size = block_size - self.block_offset;
+        let index_entry = create_block_entry(trace_id, self.block_offset as u64, spans_block_size as u32)
+            .expect("Error while building index entry");
+        self.block_index.insert(index_entry);
+        
     }
 
     pub fn id(&self) -> &BlockId {
@@ -284,8 +313,24 @@ impl DataBlock {
         self.block_meta.block_size
     }
 
-    pub fn get_block_meta(&mut self) -> &mut BlockMeta {
+    pub fn get_block_meta(&self) -> &BlockMeta {
+        &self.block_meta
+    }
+
+    pub fn get_block_meta_mut(&mut self) -> &mut BlockMeta {
         &mut self.block_meta
+    }
+    
+    pub fn block_index(&self) -> &BlockIndex {
+        &self.block_index
+    }
+
+    pub fn set_start_ts(&mut self, start_ts: u64) {
+        self.block_meta.set_start_ts(start_ts);
+    }
+
+    pub fn set_end_ts(&mut self, end_ts: u64) {
+        self.block_meta.set_end_ts(end_ts)
     }
 }
 
@@ -402,4 +447,13 @@ fn normalise_ts(ts: u64) -> u64 {
     } else {
         ts
     }
+}
+
+fn create_block_entry(trace_id: &TraceId, block_offset: u64, spans_block_size: u32) -> Result<BlockIndexEntry, String> {
+    let index_entry = BlockIndexEntry::builder()
+        .trace_id(*trace_id)
+        .offset(block_offset)
+        .length(spans_block_size)
+        .build();
+    index_entry
 }

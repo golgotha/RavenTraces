@@ -1,3 +1,4 @@
+use std::fs::File;
 use serde::Deserialize;
 use storage::types::StorageConfig;
 
@@ -46,6 +47,23 @@ impl Default for Settings {
         }
     }
 
+}
+
+impl Settings {
+    pub fn new(config_path: Option<String>) -> Result<Self, String> {
+        let mut errors = Vec::new();
+        let config_exists = |path| File::open(path).is_ok();
+
+        if let Some(path) = &config_path
+            && !config_exists(path)
+        {
+            errors.push(format!(
+                "Config file via --config-path is not found: {path}"
+            ));
+        }
+
+        Ok(Settings::default())
+    }
 }
 
 #[allow(clippy::unnecessary_wraps)] // Used as serde default

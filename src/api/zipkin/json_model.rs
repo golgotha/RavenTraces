@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use storage::span::{AttributeValue, SpanId, SpanKind, TraceId, Span, SpanEvent};
+use std::fmt::format;
+use storage::span::{AttributeValue, Span, SpanEvent, SpanId, SpanKind, TraceId};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ZipkinEndpoint {
@@ -26,7 +27,7 @@ pub enum ZipkinKind {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ZipkinAnnotation {
     pub timestamp: u64,
-    pub value: String
+    pub value: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -68,40 +69,50 @@ pub struct ZipkinSpansQuery {
     pub service_name: String,
 }
 
-impl From<&ZipkinSpan> for Span {
-    fn from(span: &ZipkinSpan) -> Self {
-        let trace_id = TraceId::from_str(&span.trace_id).unwrap();
-        let span_id = SpanId::from_str(&span.id).unwrap();
-        let parent_span_id = span.parent_id.as_ref().map(|v| SpanId::from_str(&v).unwrap());
+impl From<ZipkinSpan> for Span {
+    fn from(span: ZipkinSpan) -> Self {
+        let trace_id = TraceId::from_str(&span.trace_id)
+            .unwrap_or_else(|_| panic!("Unable to parse trace ID {}", span.trace_id));
 
-        let empty_tags = HashMap::new();
-        let tags = span.tags.as_ref().unwrap_or(&empty_tags);
+        let span_id = SpanId::from_str(&span.id)
+            .unwrap_or_else(|_| panic!("Unable to parse span ID: {}", span.id));
 
-        let events = span.annotations
-            .clone()
+        let parent_span_id = span.parent_id.as_ref().map(|v| {
+            SpanId::from_str(&v).unwrap_or_else(|_| panic!("Unable to parse parent span ID: {}", v))
+        });
+
+        let status_code = extract_status_code(span.tags.as_ref());
+        let status_message = extract_status_message(span.tags.as_ref());
+
+        let tags = span.tags;
+
+        let events = span
+            .annotations
             .unwrap_or_default()
             .into_iter()
             .map(|a| SpanEvent {
-                timestamp: a.timestamp * 1000,  // micros -> nanos
+                timestamp: a.timestamp * 1000,
                 name: a.value,
                 attributes: HashMap::new(),
             })
             .collect();
 
+        let mut attributes = convert_tags(tags);
+        convert_local_endpoint_to_attributes(span.local_endpoint, &mut attributes);
+        convert_remote_endpoint_to_attributes(span.remote_endpoint, &mut attributes);
+
         Self {
             trace_id,
             span_id,
             parent_span_id,
-            name: span.name.clone(),
-            kind: span.kind.clone().map(convert_kind).unwrap_or(SpanKind::Internal),
+            name: span.name,
+            kind: span.kind.map(convert_kind).unwrap_or(SpanKind::Internal),
             timestamp: span.timestamp,
             duration: span.duration,
-            attributes: convert_tags(&tags),
+            attributes,
             events,
-            status_code: extract_status_code(&tags),
-            status_message: extract_status_message(&tags),
-            local_service: span.local_endpoint.clone().and_then(|e| e.service_name),
-            remote_service: span.remote_endpoint.clone().and_then(|e| e.service_name),
+            status_code,
+            status_message,
         }
     }
 }
@@ -115,17 +126,81 @@ fn convert_kind(kind: ZipkinKind) -> SpanKind {
     }
 }
 
-fn convert_tags(tags: &HashMap<String, String>) -> HashMap<String, AttributeValue> {
-    tags.iter()
-        .map(|(k, v)| (k.clone(), AttributeValue::String(v.clone())))
-        .collect()
+fn convert_tags(tags: Option<HashMap<String, String>>) -> HashMap<String, AttributeValue> {
+    match tags {
+        Some(tags) => tags
+            .into_iter()
+            .map(|(k, v)| (k, AttributeValue::String(v)))
+            .collect(),
+        None => HashMap::new(),
+    }
 }
 
-fn extract_status_code(tags: &HashMap<String, String>) -> Option<u32> {
-    tags.get("http.status_code")
-        .and_then(|v| v.parse::<u32>().ok())
+fn extract_status_code(tags: Option<&HashMap<String, String>>) -> Option<u32> {
+    match tags {
+        Some(tags) => tags
+            .get("http.status_code")
+            .and_then(|v| v.parse::<u32>().ok()),
+        None => None,
+    }
 }
 
-fn extract_status_message(tags: &HashMap<String, String>) -> Option<String> {
-    tags.get("error").cloned()
+fn extract_status_message(tags: Option<&HashMap<String, String>>) -> Option<String> {
+    tags.and_then(|tags| tags.get("error").cloned())
+}
+
+fn convert_local_endpoint_to_attributes(
+    local_endpoint: Option<ZipkinEndpoint>,
+    attributes: &mut HashMap<String, AttributeValue>) {
+
+    let Some(endpoint) = local_endpoint else {
+        return;
+    };
+
+    if let Some(service_name) = endpoint.service_name {
+        attributes.insert(
+            "service.name".to_string(),
+            AttributeValue::String(service_name),
+        );
+    }
+
+    if let Some(ipv4) = endpoint.ipv4 {
+        attributes.insert("server.address".to_string(), AttributeValue::String(ipv4));
+    }
+
+    if let Some(ipv6) = endpoint.ipv6 {
+        attributes.insert("server.address".to_string(), AttributeValue::String(ipv6));
+    }
+
+    if let Some(port) = endpoint.port {
+        attributes.insert("server.port".to_string(), AttributeValue::Int(port as i64));
+    }
+}
+
+fn convert_remote_endpoint_to_attributes(
+    remote_endpoint: Option<ZipkinEndpoint>,
+    attributes: &mut HashMap<String, AttributeValue>) {
+
+    let Some(endpoint) = remote_endpoint else {
+        return;
+    };
+
+    if let Some(service_name) = endpoint.service_name {
+        attributes.insert(
+            "peer.service".to_string(),
+            AttributeValue::String(service_name),
+        );
+    }
+
+    if let Some(ipv4) = endpoint.ipv4 {
+        attributes.insert("client.address".to_string(), AttributeValue::String(ipv4));
+    }
+
+    if let Some(ipv6) = endpoint.ipv6 {
+        attributes.insert("client.address".to_string(), AttributeValue::String(ipv6));
+    }
+
+    if let Some(port) = endpoint.port {
+        attributes.insert("client.port".to_string(), AttributeValue::Int(port as i64));
+    }
 }

@@ -1,4 +1,4 @@
-use crate::querier::model::SearchRequest;
+use storage::search_request::SearchRequest;
 use storage::span::{TraceId};
 
 #[derive(Debug, thiserror::Error)]
@@ -20,7 +20,7 @@ pub trait Querier<R>: Send + Sync {
 
     fn search_spans_between(&self, start_ts: u64, end_ts: u64) -> Result<Vec<R>, QuerierError>;
 
-    fn search_traces(&self, search_request: &SearchRequest) -> Result<Vec<R>, QuerierError>;
+    fn search_traces(&self, search_request: SearchRequest) -> Result<Vec<R>, QuerierError>;
 
     fn get_services(&self) -> Result<Vec<String>, QuerierError>;
 }

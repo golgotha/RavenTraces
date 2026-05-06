@@ -3,7 +3,6 @@ use std::fmt;
 use std::fmt::Display;
 use std::str::FromStr;
 use crate::readers::event_attribute_reader::read_span_events;
-use crate::readers::local_service_reader::read_local_service;
 use crate::readers::span_attibute_reader::read_attributes;
 use common::binary_readers::{read_bytes, read_string, read_u64, read_u8};
 use common::serialization::Writable;
@@ -16,10 +15,10 @@ pub enum TypeError {
     InvalidSpanId(String),
 }
 
-#[derive(Debug, Eq, Hash, PartialEq, Copy, Clone)]
+#[derive(Debug, Eq, Hash, PartialEq, Copy, Clone, Ord, PartialOrd)]
 pub struct TraceId(pub [u8; 16]);
 
-#[derive(Debug, Eq, Hash, PartialEq, Copy, Clone)]
+#[derive(Debug, Eq, Hash, PartialEq, Copy, Clone, Ord, PartialOrd)]
 pub struct SpanId(pub [u8; 8]);
 
 #[derive(Debug, Clone)]
@@ -35,12 +34,11 @@ pub struct Span {
     pub events: Vec<SpanEvent>,
     pub status_code: Option<u32>,
     pub status_message: Option<String>,
-    pub local_service: Option<String>,
-    pub remote_service: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpanKind {
+    Unspecified,
     Internal,
     Server,
     Client,
@@ -70,6 +68,7 @@ pub struct SpanEvent {
 impl Display for SpanKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
+            SpanKind::Unspecified => "UNSPECIFIED",
             SpanKind::Internal => "INTERNAL",
             SpanKind::Server => "SERVER",
             SpanKind::Client => "CLIENT",
@@ -91,6 +90,22 @@ impl Display for AttributeValue {
             AttributeValue::IntArray(arr) => write!(f, "{:?}", arr),
             AttributeValue::FloatArray(arr) => write!(f, "{:?}", arr),
             AttributeValue::BoolArray(arr) => write!(f, "{:?}", arr),
+        }
+    }
+}
+
+impl AttributeValue {
+    pub fn as_int(&self) -> Option<i64> {
+        match self {
+            AttributeValue::Int(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            AttributeValue::String(value) => Some(value.as_str()),
+            _ => None,
         }
     }
 }
@@ -117,6 +132,7 @@ impl FromStr for SpanKind {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            "Unspecified" => Ok(SpanKind::Unspecified),
             "Internal" => Ok(SpanKind::Internal),
             "Server" => Ok(SpanKind::Server),
             "Client" => Ok(SpanKind::Client),
@@ -130,22 +146,24 @@ impl FromStr for SpanKind {
 impl SpanKind {
     pub fn from_index(index: i32) -> Option<Self> {
         match index {
-            0 => Some(SpanKind::Internal),
-            1 => Some(SpanKind::Server),
-            2 => Some(SpanKind::Client),
-            3 => Some(SpanKind::Producer),
-            4 => Some(SpanKind::Consumer),
+            0 => Some(SpanKind::Unspecified),
+            1 => Some(SpanKind::Internal),
+            2 => Some(SpanKind::Server),
+            3 => Some(SpanKind::Client),
+            4 => Some(SpanKind::Producer),
+            5 => Some(SpanKind::Consumer),
             _ => None, // invalid index
         }
     }
 
     pub fn to_index(self) -> i32 {
         match self {
-            SpanKind::Internal => 0,
-            SpanKind::Server => 1,
-            SpanKind::Client => 2,
-            SpanKind::Producer => 3,
-            SpanKind::Consumer => 4,
+            SpanKind::Unspecified => 0,
+            SpanKind::Internal => 1,
+            SpanKind::Server => 2,
+            SpanKind::Client => 3,
+            SpanKind::Producer => 4,
+            SpanKind::Consumer => 5,
         }
     }
 }
@@ -187,6 +205,30 @@ impl TraceId {
         }
 
         unsafe { String::from_utf8_unchecked(out) }
+    }
+
+    pub fn fnv1a_64(&self) -> u64 {
+        const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+        const FNV_PRIME: u64 = 0x00000100000001B3;
+
+        let mut hash = FNV_OFFSET_BASIS;
+
+        for byte in self.0 {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+
+        hash
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != 16 {
+            return None;
+        }
+
+        let mut arr = [0u8; 16];
+        arr.copy_from_slice(bytes);
+        Some(Self(arr))
     }
 }
 
@@ -241,6 +283,16 @@ impl SpanId {
 
         unsafe { String::from_utf8_unchecked(out) }
     }
+
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != 8 {
+            return None;
+        }
+
+        let mut arr = [0u8; 8];
+        arr.copy_from_slice(bytes);
+        Some(Self(arr))
+    }
 }
 
 impl Display for SpanId {
@@ -271,12 +323,6 @@ impl Span {
     /// | status_code                | 4 (if present)                  | u32                                                 |
     /// | status_message length      | 4 (if present)                  | u32 length of message                               |
     /// | status_message             | variable                        | UTF-8 bytes                                         |
-    /// | local_service present flag | 1                               | 0 = None, 1 = Some                                  |
-    /// | local_service length       | 4 (if present)                  | u32 length                                          |
-    /// | local_service              | variable                        | UTF-8 bytes                                         |
-    /// | remote_service present flag| 1                               | 0 = None, 1 = Some                                  |
-    /// | remote_service length      | 4 (if present)                  | u32 length                                          |
-    /// | remote_service             | variable                        | UTF-8 bytes                                         |
     pub fn serialize(&self) -> Vec<u8> {
         let mut buffer = Vec::new();
 
@@ -296,11 +342,12 @@ impl Span {
         buffer.extend(name_size);
         buffer.extend(self.name.as_bytes());
         let kind_byte: u8 = match self.kind {
-            SpanKind::Internal => 0,
-            SpanKind::Server => 1,
-            SpanKind::Client => 2,
-            SpanKind::Producer => 3,
-            SpanKind::Consumer => 4,
+            SpanKind::Unspecified => 1,
+            SpanKind::Internal => 2,
+            SpanKind::Server => 3,
+            SpanKind::Client => 4,
+            SpanKind::Producer => 5,
+            SpanKind::Consumer => 6,
         };
         buffer.push(kind_byte);
         buffer.extend(&self.timestamp.to_le_bytes());
@@ -368,26 +415,6 @@ impl Span {
             buffer.push(0);
         }
 
-        // local_service
-        if let Some(local) = &self.local_service {
-            buffer.push(1);
-            let len = local.len() as u32;
-            buffer.extend(&len.to_le_bytes());
-            buffer.extend(local.as_bytes());
-        } else {
-            buffer.push(0);
-        }
-
-        // remote_service
-        if let Some(remote) = &self.remote_service {
-            buffer.push(1);
-            let len = remote.len() as u32;
-            buffer.extend(&len.to_le_bytes());
-            buffer.extend(remote.as_bytes());
-        } else {
-            buffer.push(0);
-        }
-
         buffer
     }
 
@@ -432,9 +459,6 @@ impl Span {
         let status_message = read_status_message(&vector, &mut offset)
             .expect("Unable to deserialize status_message from data storage");
 
-        let local_service = read_local_service(&vector, &mut offset)
-            .expect("Unable to deserialize local_service from data storage");
-
         Span {
             trace_id: TraceId(trace_id),
             span_id: SpanId(span_id),
@@ -447,8 +471,6 @@ impl Span {
             events,
             status_code,
             status_message,
-            local_service,
-            remote_service: None,
         }
     }
 
@@ -490,14 +512,6 @@ impl SizeEstimator for Span {
 
         if let Some(status_message) = &self.status_message {
             size += status_message.len();
-        }
-
-        if let Some(local_service) = &self.local_service {
-            size += local_service.len();
-        }
-
-        if let Some(remote_service) = &self.remote_service {
-            size += remote_service.len();
         }
 
         size

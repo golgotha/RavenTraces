@@ -2,9 +2,9 @@ use log::{debug, error, trace};
 use storage::block::BlockId;
 use storage::bloom::bloom_filter::BloomFilter;
 use storage::errors::StorageError;
-use storage::span::{Span};
+use storage::search_request::SearchRequest;
+use storage::span::{AttributeValue, Span};
 use storage::sstable_reader::{SStableReader};
-use crate::querier::model::SearchRequest;
 
 type SearchResult<T> = Result<T, StorageError>;
 
@@ -71,8 +71,13 @@ impl BlockStorageSearch for LocalStorageSearch {
                 }
                 let span = Span::deserialize(&entry?.payload());
 
-                if let Some(svc) = &service_name {
-                    if span.local_service.as_deref() != Some(svc.as_str()) {
+                if let Some(svc) = service_name.as_deref() {
+                    let span_service_name = span
+                        .attributes
+                        .get("service.name")
+                        .and_then(AttributeValue::as_str);
+
+                    if span_service_name != Some(svc) {
                         continue;
                     }
                 }

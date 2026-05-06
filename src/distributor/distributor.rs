@@ -24,7 +24,7 @@ impl Distributor {
         Distributor {ingester}
     }
 
-    pub fn deliver(&mut self, spans: &Vec<Span>) {
+    pub fn deliver(&self, spans: Vec<Span>) {
 
         match self.ingester.ingest(spans) {
             Ok(()) => {},

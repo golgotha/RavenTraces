@@ -1,25 +1,36 @@
 use crate::errors::EngineError;
 use crate::flush_worker::{DiskFlushWorker, FlushWorker};
 use crate::memtable::Memtable;
-use crate::span::Span;
+use crate::span::{Span, TraceId};
 use crate::sstable_writer::SStableWriterImpl;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
+use uuid::Timestamp;
 use wal::log_entry::{LogEntry};
-use wal::wal::WAL;
+use wal::wal::{WAL};
+use crate::flush_service::FlushService;
+use crate::search_request::SearchRequest;
 use crate::types::{MemtableConfig, StorageConfig};
 
 pub trait CorvusEngine: Send + Sync {
 
-    fn start(&mut self);
+    fn start(&self);
 
-    fn append(&mut self, spans: &Vec<Span>) -> Result<(), EngineError>;
+    fn append(&self, spans: Vec<Span>) -> Result<(), EngineError>;
 
-    fn replay_wal(wal: &mut WAL, memtable: Arc<RwLock<Memtable>>);
+    fn replay_wal(&self, wal: &mut WAL, mem_table: &mut Memtable);
 
-    fn mem_table(&self) -> Arc<RwLock<Memtable>>;
+    fn search(&self, request: &SearchRequest) -> Vec<Span>;
+    
+    fn fetch_by_time(&self, start_ts: u64, end_ts: u64) -> Vec<Span>;
+    
+    fn fetch_trace(&self, trace_id:&TraceId) -> Vec<Span>;
+    
+    fn fetch_services(&self) -> Vec<String>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,21 +39,17 @@ pub struct CorvusEngineConfig {
 }
 
 pub struct CorvusEngineImpl {
-    inner: Arc<Mutex<CorvusEngineState>>,
+    wal: Arc<Mutex<WAL>>,
+    active_mem_table: Arc<Mutex<Memtable>>,
     config: CorvusEngineConfig,
-}
-
-struct CorvusEngineState {
-    wal: WAL,
-    mem_table: Arc<RwLock<Memtable>>,
-    flush_worker: Box<dyn FlushWorker>,
+    flush_service: FlushService
 }
 
 impl CorvusEngineImpl {
 }
 
 impl CorvusEngineImpl {
-    pub fn new(base_dir: PathBuf, mem_table: Arc<RwLock<Memtable>>, config: StorageConfig) -> Self {
+    pub fn new(base_dir: PathBuf, mem_table: Arc<Mutex<Memtable>>, config: StorageConfig) -> Self {
         let mem_table_config = config.mem_table.clone();
         let max_block_size = config.max_block_size.clone();
 
@@ -50,72 +57,108 @@ impl CorvusEngineImpl {
         let wal = WAL::open(wal_dir_path).
             expect("could not open traces.wal");
 
+        let wal = Arc::new(Mutex::new(wal));
+
         let stable_writer = SStableWriterImpl::new(Path::new(&base_dir).to_path_buf());
         let flush_worker = Box::new(DiskFlushWorker::new(stable_writer, max_block_size));
+        let flush_worker: Arc<Mutex<Box<dyn FlushWorker + Send + Sync>>> = Arc::new(Mutex::new(flush_worker));
 
-        let engine_state = CorvusEngineState {
+        let flush_service = FlushService::new(Arc::clone(&wal), flush_worker);
+
+        let engine = Self {
             wal,
-            mem_table,
-            flush_worker,
-        };
-
-        Self {
-            inner: Arc::new(Mutex::new(engine_state)),
+            active_mem_table: mem_table,
             config: CorvusEngineConfig {
                 mem_table_config
             },
-        }
+            flush_service
+        };
+
+        engine
+    }
+
+    pub fn start_stats_logger(&self, mem_table: Arc<Mutex<Memtable>>) {
+        thread::spawn(move || {
+            loop {
+                thread::sleep(Duration::from_secs(15));
+
+                let stats = {
+                    let mt = mem_table.lock().unwrap();
+                    mt.stats()
+                };
+
+                info!(
+                "spans = {}, trace_ids = {}, time_keys = {}, services = {}, lru_len={} trace_refs = {}, time_refs = {}, service_refs = {}, spans_mb = {}, total_estimated_size_mb = {}",
+                stats.spans_len,
+                stats.trace_ids,
+                stats.time_index_keys,
+                stats.service_keys,
+                stats.lru_len,
+                stats.trace_ids_refs,
+                stats.time_index_refs,
+                stats.service_index_refs,
+                stats.span_size_bytes / 1024 / 1024,
+                stats.total_estimated_size_bytes / 1024 / 1024
+            );
+            }
+        });
     }
 }
 
 impl CorvusEngine for CorvusEngineImpl {
 
-    fn start(&mut self) {
-        let mut state = self.inner.lock().unwrap();
-        let CorvusEngineState {
-            wal,
-            mem_table,
-            ..
-        } = &mut *state;
-
-        Self::replay_wal(wal, Arc::clone(mem_table));
+    fn start(&self) {
+        let mut wal = self.wal.lock().unwrap();
+        let mut mem_table = self.active_mem_table.lock().unwrap();
+        self.replay_wal(&mut wal, &mut mem_table);
+        self.start_stats_logger(Arc::clone(&self.active_mem_table));
     }
 
-    fn append(&mut self, spans: &Vec<Span>) -> Result<(), EngineError> {
-        let mut state = self.inner.lock().unwrap();
-        let CorvusEngineState {
-            wal,
-            mem_table,
-            flush_worker,
-            ..
-        } = &mut *state;
+    fn append(&self, spans: Vec<Span>) -> Result<(), EngineError> {
 
-        let mut mem_table = mem_table.write().unwrap();
-        for span in spans {
-            let vector = span.serialize();
-            let log_entry = LogEntry::new(vector);
+        {
+            let mut wal = self.wal.lock().unwrap();
+            let mut mem_table = self.active_mem_table.lock().unwrap();
+            for span in spans {
+                let vector = span.serialize();
+                let log_entry = LogEntry::new(vector);
 
-            let append_result = wal.append(&log_entry).expect("cannot append log entry");
-
-            let segment_id = append_result.segment_id();
-            mem_table.insert(&span.trace_id, span, segment_id);
+                match wal.append(log_entry) {
+                    Ok(append_result) => {
+                        let trace_id = span.trace_id;
+                        mem_table.insert(&trace_id, span);
+                    }
+                    Err(error) => {
+                        error!("Error occurred while appending log entry: {:?}", error);
+                    }
+                };
+            }
         }
 
-        if mem_table.should_flush() {
-            let mut old_memtable = {
+        {
+            let (old_memtable, checkpoint) = {
+                let mut mem_table = self.active_mem_table.lock().unwrap();
+                if !mem_table.should_flush() || self.flush_service.is_flushing() {
+                    return Ok(());
+                }
+
+
+                let mut wal = self.wal.lock().unwrap();
+                let checkpoint = wal.rotate_segment()
+                    .map_err(|e| EngineError::EngineError(e.to_string()))?;
+
                 let next_memtable = mem_table.next_generation();
-                std::mem::replace(&mut *mem_table, next_memtable)
+                let frozen_memtable = std::mem::replace(&mut *mem_table, next_memtable);
+                (frozen_memtable, checkpoint)
             };
-            flush_worker
-                .flush(wal, &mut old_memtable)
-                .expect("cannot flush memtable");
+
+            self.flush_service.request_flush(old_memtable, checkpoint);
         }
 
         Ok(())
     }
 
-    fn replay_wal(wal: &mut WAL, memtable: Arc<RwLock<Memtable>>) {
-        let mut mem_table = memtable.write().unwrap();
+    fn replay_wal(&self, wal: &mut WAL, mem_table: &mut Memtable) {
         info!("Replaying WAL, it takes a while");
         let entries = wal.replay()
             .expect("Error while replaying WAL");
@@ -124,12 +167,52 @@ impl CorvusEngine for CorvusEngineImpl {
             if let Some(payload) = entry.payload {
                 let span = Span::deserialize(&payload);
                 let trace_id = span.trace_id.clone();
-                mem_table.insert(&trace_id, &span, entry.segment_id);
+                mem_table.insert(&trace_id, span);
             }
         });
     }
 
-    fn mem_table(&self) -> Arc<RwLock<Memtable>> {
-        Arc::clone(&self.inner.lock().unwrap().mem_table)
+    fn search(&self, request: &SearchRequest) -> Vec<Span> {
+        let mem_table = self.active_mem_table.lock().unwrap();
+        let service_name = &request.service_name;
+        let span_name = &request.span_name;
+        let limit = request.limit.unwrap_or(usize::MAX);
+
+        let spans = match service_name {
+            Some(service_name) => mem_table.get_spans_by_service(service_name, limit),
+            None =>  mem_table
+                .entries()
+                .iter()
+                .flat_map(|(_trace_id, entry)| entry.get_spans().iter())
+                .map(|span| Span::deserialize(span))
+                .take(limit)
+                .collect()
+        };
+
+        let spans = spans
+            .into_iter()
+            .filter(|span| match &span_name {
+                Some(name) => span.name == name.as_str(),
+                None => true,
+            })
+            .collect::<Vec<Span>>();
+
+        spans
+    }
+
+    fn fetch_by_time(&self, start_ts: u64, end_ts: u64) -> Vec<Span> {
+        let mem_table = self.active_mem_table.lock().unwrap();
+        let spans = mem_table.query_by_time(start_ts, end_ts);
+        spans
+    }
+    
+    fn fetch_trace(&self, trace_id:&TraceId) -> Vec<Span> {
+        let mem_table = self.active_mem_table.lock().unwrap();
+        mem_table.get_index(trace_id)
+    }
+
+    fn fetch_services(&self) -> Vec<String> {
+        let mem_table = self.active_mem_table.lock().unwrap();
+        mem_table.services()
     }
 }

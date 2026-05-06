@@ -42,11 +42,9 @@ mod tests {
             events: vec![],
             status_code: Some(1),
             status_message: Some("test messgae".to_string()),
-            local_service: None,
-            remote_service: None,
         };
 
-        block.add_span(&span.serialize());
+        block.add_span(&trace_id, &span.serialize());
         let n_bytes = table_writer.write_block(&block)
             .unwrap();
         assert!(n_bytes > 0);

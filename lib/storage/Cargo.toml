@@ -14,6 +14,8 @@ testing = []
 common = { path = "../common" }
 wal = { path = "../wal"}
 metrics = {path = "../metrics"}
+
+crossbeam-skiplist = "0.1.3"
 indexmap = "2.13.0"
 log = "0.4"
 tempfile = "3.27.0"
@@ -22,3 +24,4 @@ uuid        = { version = "1", features = ["v7"] }
 serde_json = "1.0.149"
 murmur3 = "0.5.2"
 rand = "0.10.1"
+ulid = "1.2.1"

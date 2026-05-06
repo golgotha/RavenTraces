@@ -1,32 +1,33 @@
 use crate::api::zipkin::json_model::{ZipkinSpan, ZipkinSpansQuery, ZipkinTraceQuery};
 use crate::distributor::distributor::Distributor;
-use crate::querier::model::SearchRequest;
 use crate::querier::querier::Querier;
 use crate::querier::zipkin_querier::ZipkinQuerier;
-use actix_web::{HttpResponse, get, post, web};
-use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
 use actix_web::http::StatusCode;
+use actix_web::{get, post, web, HttpResponse};
+use std::collections::{HashMap, HashSet};
+use storage::search_request::SearchRequest;
 use storage::span::Span;
 
 #[post("/api/v2/spans")]
 async fn post_zipkin_span(
-    distributor: web::Data<Mutex<Distributor>>,
+    distributor: web::Data<Distributor>,
     spans: web::Json<Vec<ZipkinSpan>>,
 ) -> HttpResponse {
-    let unified_spans_vec = spans.iter().map(Span::from).collect();
-    let mut distributor = distributor.lock().unwrap();
-    distributor.deliver(&unified_spans_vec);
+    let unified_spans_vec = spans
+        .into_inner()
+        .into_iter()
+        .map(Span::from)
+        .collect();
+    distributor.deliver(unified_spans_vec);
 
     HttpResponse::Ok().status(StatusCode::OK).finish()
 }
 
 #[get("/api/v2/trace/{id}")]
 async fn get_zipkin_trace(
-    querier: web::Data<Mutex<ZipkinQuerier>>,
+    querier: web::Data<ZipkinQuerier>,
     path: web::Path<String>,
 ) -> HttpResponse {
-    let querier = querier.lock().unwrap();
     let result = querier.search_by_trace_id(path.to_string());
 
     match result {
@@ -40,7 +41,7 @@ async fn get_zipkin_trace(
 
 #[get("/api/v2/traces")]
 async fn get_zipkin_traces(
-    querier: web::Data<Mutex<ZipkinQuerier>>,
+    querier: web::Data<ZipkinQuerier>,
     query: web::Query<ZipkinTraceQuery>,
 ) -> HttpResponse {
     let traces_query = query.into_inner();
@@ -49,7 +50,6 @@ async fn get_zipkin_traces(
     let limit = traces_query.limit;
     let end_ts = traces_query.end_ts;
     let lookback = traces_query.lookback;
-    let querier_lock = querier.lock().unwrap();
 
     let request = SearchRequest {
         trace_id: None,
@@ -63,7 +63,7 @@ async fn get_zipkin_traces(
     if let Some(end_ts) = end_ts {
         let lookback = lookback.unwrap_or(60000);
         let start_time = end_ts - lookback;
-        let traces = querier_lock.search_spans_between(start_time, end_ts);
+        let traces = querier.search_spans_between(start_time, end_ts);
         match traces {
             Ok(result) => {
                 let response = Some(result);
@@ -72,7 +72,7 @@ async fn get_zipkin_traces(
             Err(_) => HttpResponse::NotFound().finish(),
         }
     } else {
-        match querier_lock.search_traces(&request) {
+        match querier.search_traces(request) {
             Ok(traces) => {
                 let mut traces_map: HashMap<String, Vec<ZipkinSpan>> = HashMap::new();
                 for span in traces {
@@ -92,8 +92,8 @@ async fn get_zipkin_traces(
 }
 
 #[get("/api/v2/services")]
-async fn get_zipkin_services(querier: web::Data<Mutex<ZipkinQuerier>>) -> HttpResponse {
-    let result = querier.lock().unwrap().get_services();
+async fn get_zipkin_services(querier: web::Data<ZipkinQuerier>) -> HttpResponse {
+    let result = querier.get_services();
 
     match result {
         Ok(services) => HttpResponse::Ok().json(services),
@@ -103,7 +103,7 @@ async fn get_zipkin_services(querier: web::Data<Mutex<ZipkinQuerier>>) -> HttpRe
 
 #[get("/api/v2/spans")]
 async fn get_zipkin_spans(
-    querier: web::Data<Mutex<ZipkinQuerier>>,
+    querier: web::Data<ZipkinQuerier>,
     query: web::Query<ZipkinSpansQuery>,
 ) -> HttpResponse {
     let spans_query = query.into_inner();
@@ -118,7 +118,7 @@ async fn get_zipkin_spans(
         lookback: None,
     };
 
-    let zipkin_spans = querier.lock().unwrap().search_traces(&request)
+    let zipkin_spans = querier.search_traces(request)
         .unwrap()
         .iter()
         .map(|span| span.name.clone())

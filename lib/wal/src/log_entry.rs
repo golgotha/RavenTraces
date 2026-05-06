@@ -139,8 +139,8 @@ mod tests {
         let payload = b"Payload".to_vec();
 
         let log_entry = LogEntry {
-            header: header,
-            payload: payload.clone(),
+            header,
+            payload,
         };
 
         let result_vector = log_entry.serialize();
@@ -150,7 +150,7 @@ mod tests {
         expected.extend(&1u64.to_le_bytes());
         expected.extend(&20u32.to_le_bytes());
         expected.extend(&100u32.to_le_bytes());
-        expected.extend_from_slice(&payload);
+        expected.extend_from_slice(&log_entry.payload);
 
         assert_eq!(result_vector, expected);
     }
