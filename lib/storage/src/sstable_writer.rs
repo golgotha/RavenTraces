@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use log::{info, trace};
+use log::{trace};
 use common::serialization::Writable;
 use crate::block::{BlockId, BlockMeta, BloomFilterBlock, DataBlock, StorageMeta};
 use crate::block_index::BlockIndex;

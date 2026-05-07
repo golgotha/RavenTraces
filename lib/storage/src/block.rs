@@ -1,5 +1,5 @@
 use crate::bloom::bloom_filter::{BloomFilter, BloomFilterImpl};
-use crate::span::{Span, TraceId};
+use crate::span::{TraceId};
 use common::binary_readers::{read_bytes, read_n_bytes, read_u16, read_u32, read_u64, read_u8};
 use common::serialization::{Readable, Writable};
 use serde::{Deserialize, Serialize};

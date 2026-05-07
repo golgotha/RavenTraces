@@ -1,7 +1,7 @@
-use std::sync::{mpsc, Arc, Condvar, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use log::{debug, error, info};
+use log::{debug, error};
 use wal::wal::{Checkpoint, WAL};
 use crate::flush_worker::FlushWorker;
 use crate::memtable::Memtable;

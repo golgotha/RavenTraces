@@ -1,5 +1,4 @@
 use crate::block::{BloomFilterBlock, DataBlock};
-use crate::block_index::{BlockIndex, BlockIndexEntry};
 use crate::errors::StorageError;
 use crate::memtable::{Memtable};
 use crate::sstable_writer::{SStableWriter, SStableWriterImpl};
