@@ -1,6 +1,10 @@
 use log::{trace};
 use crate::errors::WalError;
+use crate::segment::Segment;
 use crate::storage::{Readable, Writable};
+use crate::wal::WAL;
+
+pub type LogEntryIteratorResult<'a> = Result<Box<dyn Iterator<Item = Result<LogEntryPointer, WalError>> + 'a>, WalError>;
 
 #[repr(C, packed)]
 pub struct LogEntryHeader {
@@ -88,6 +92,86 @@ impl Readable for LogEntryHeader {
 
     fn num_bytes_to_read() -> usize {
         size_of::<LogEntryHeader>()
+    }
+}
+
+pub struct LogEntryIterator<'a> {
+    wal: &'a WAL,
+    current_segment_id: u32,
+    current_segment: Option<Segment>,
+    last_segment_id: u32,
+    offset: u64,
+    current_segment_size: u64,
+}
+
+impl<'a> LogEntryIterator<'a> {
+    pub fn new(wal: &'a WAL,
+               first_segment_id: u32,
+               last_segment_id: u32) -> Self {
+        Self {
+            wal,
+            current_segment_id: first_segment_id,
+            current_segment: None,
+            last_segment_id,
+            offset: Segment::header_size() as u64,
+            current_segment_size: 0,
+        }
+    }
+}
+
+impl<'a> Iterator for LogEntryIterator<'a> {
+    type Item = Result<LogEntryPointer, WalError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.current_segment_id > self.last_segment_id {
+                return None;
+            }
+
+            if self.current_segment.is_none() {
+                // open segment
+                let segment = match self.wal.open_segment_by_id(self.current_segment_id) {
+                    Ok(segment) => segment,
+                    Err(err) => return Some(Err(err)),
+                };
+
+                let segment_size = match segment.segment_size() {
+                    Ok(size) => size,
+                    Err(err) => return Some(Err(WalError::IoError(err))),
+                };
+
+                self.offset = Segment::header_size() as u64;
+                self.current_segment_size = segment_size;
+                self.current_segment = Some(segment);
+            }
+
+            if self.offset >= self.current_segment_size {
+                self.current_segment = None;
+                self.current_segment_id += 1;
+                self.offset = Segment::header_size() as u64;
+                self.current_segment_size = 0;
+                continue;
+            }
+
+            let segment = self.current_segment.as_mut().unwrap();
+            let offset = self.offset;
+            let log_entry = match segment.read_log_entry(offset) {
+                Ok(entry) => entry,
+                Err(err) => return Some(Err(err)),
+            };
+
+            self.offset += log_entry.header.block_size as u64;
+
+            let segment_id = segment.header().segment_id();
+
+            return Some(Ok(LogEntryPointer {
+                segment_id,
+                offset,
+                payload: Some(log_entry.payload),
+            }));
+        }
+
+
     }
 }
 

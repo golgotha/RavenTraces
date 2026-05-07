@@ -2,18 +2,20 @@ use std::fs;
 use std::fs::{DirEntry, File};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use log::{debug, info, Level};
+use log::{debug, info, warn, Level};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use common::clock::{now_millis};
 use crate::errors::WalError;
-use crate::log_entry::{LogEntry, LogEntryPointer};
+use crate::log_entry::{LogEntryIterator, LogEntry, LogEntryPointer, LogEntryIteratorResult};
 use crate::segment::{Segment};
 use crate::storage::{Readable, Storage, Writable};
 use crate::storage::storage::FileStorage;
 
 const CHECKPOINT_FILE_NAME: &str = "checkpoint.json";
 const FILE_EXTENSION: &str = ".wal";
+
+type WalResult<T> = Result<T, WalError>;
 
 #[derive(Debug)]
 pub struct WalOptions {
@@ -123,38 +125,15 @@ impl WAL {
         Ok(Checkpoint { safe_segment })
     }
 
-    pub fn replay(&mut self) -> Result<Vec<LogEntryPointer>, WalError> {
+    pub fn replay(&mut self) -> LogEntryIteratorResult {
         info!("Replaying WAL entries");
-
-        let mut offset = Segment::header_size() as u64;
         let checkpoint = self.read_checkpoint();
         let safe_segment = checkpoint.map(|c| c.safe_segment)
-            .unwrap_or(0);
-
+            .unwrap_or(1);
+        
         info!("Last safe segment #{}", safe_segment);
-
-        let mut entries = Vec::new();
-        let mut current_segment_id = safe_segment;
-        while current_segment_id < self.last_segment_id {
-            current_segment_id += 1;
-            debug!("Opening segment={}", current_segment_id);
-            let segment = self.open_segment_by_id(current_segment_id)?;
-            let segment_size = segment.segment_size()?;
-
-            while offset < segment_size {
-                let log_entry : LogEntry = self.active_segment.read_log_entry(offset)?;
-                let segment_id = self.active_segment.header().segment_id();
-                entries.push(LogEntryPointer {
-                    segment_id,
-                    offset,
-                    payload: Some(log_entry.payload),
-                });
-                offset += log_entry.header.block_size as u64;
-            }
-        }
-
-        info!("Reading {} WAL entries completed", entries.len());
-        Ok(entries)
+        let iterator = LogEntryIterator::new(self, safe_segment, self.last_segment_id);
+        Ok(Box::new(iterator))
     }
 
     pub fn commit_checkpoint(&mut self) -> Result<(), WalError> {
@@ -225,7 +204,7 @@ impl WAL {
         }
     }
 
-    fn open_segment_by_id(&self, segment_id: u32) -> Result<Segment, WalError> {
+    pub(crate) fn open_segment_by_id(&self, segment_id: u32) -> Result<Segment, WalError> {
         info!("Opening WAL directory entry");
         let segment_name = Segment::get_segment_name(segment_id);
         let segment_path = Path::new(self.dir.as_path())

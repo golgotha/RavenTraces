@@ -10,7 +10,7 @@ use std::time::Duration;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use uuid::Timestamp;
-use wal::log_entry::{LogEntry};
+use wal::log_entry::{LogEntry, LogEntryPointer};
 use wal::wal::{WAL};
 use crate::flush_service::FlushService;
 use crate::search_request::SearchRequest;
@@ -25,11 +25,11 @@ pub trait CorvusEngine: Send + Sync {
     fn replay_wal(&self, wal: &mut WAL, mem_table: &mut Memtable);
 
     fn search(&self, request: &SearchRequest) -> Vec<Span>;
-    
+
     fn fetch_by_time(&self, start_ts: u64, end_ts: u64) -> Vec<Span>;
-    
+
     fn fetch_trace(&self, trace_id:&TraceId) -> Vec<Span>;
-    
+
     fn fetch_services(&self) -> Vec<String>;
 }
 
@@ -124,7 +124,7 @@ impl CorvusEngine for CorvusEngineImpl {
                 let log_entry = LogEntry::new(vector);
 
                 match wal.append(log_entry) {
-                    Ok(append_result) => {
+                    Ok(_) => {
                         let trace_id = span.trace_id;
                         mem_table.insert(&trace_id, span);
                     }
@@ -160,16 +160,23 @@ impl CorvusEngine for CorvusEngineImpl {
 
     fn replay_wal(&self, wal: &mut WAL, mem_table: &mut Memtable) {
         info!("Replaying WAL, it takes a while");
+        // let entries = wal.replay()
+        //     .expect("Error while replaying WAL");
         let entries = wal.replay()
             .expect("Error while replaying WAL");
 
-        entries.into_iter().for_each(|entry| {
-            if let Some(payload) = entry.payload {
+        let mut entries_count = 0;
+        for entry in entries {
+            let pointer = entry.unwrap();
+
+            if let Some(payload) = pointer.payload {
                 let span = Span::deserialize(&payload);
                 let trace_id = span.trace_id.clone();
                 mem_table.insert(&trace_id, span);
             }
-        });
+            entries_count += 1;
+        }
+        info!("Reading {} WAL entries completed", entries_count);
     }
 
     fn search(&self, request: &SearchRequest) -> Vec<Span> {
@@ -205,7 +212,7 @@ impl CorvusEngine for CorvusEngineImpl {
         let spans = mem_table.query_by_time(start_ts, end_ts);
         spans
     }
-    
+
     fn fetch_trace(&self, trace_id:&TraceId) -> Vec<Span> {
         let mem_table = self.active_mem_table.lock().unwrap();
         mem_table.get_index(trace_id)
