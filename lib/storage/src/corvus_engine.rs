@@ -88,12 +88,11 @@ impl CorvusEngineImpl {
                 };
 
                 info!(
-                "spans = {}, trace_ids = {}, time_keys = {}, services = {}, lru_len={} trace_refs = {}, time_refs = {}, service_refs = {}, spans_mb = {}, total_estimated_size_mb = {}",
+                "spans = {}, trace_ids = {}, time_keys = {}, services = {}, trace_refs = {}, time_refs = {}, service_refs = {}, spans_mb = {}, total_estimated_size_mb = {}",
                 stats.spans_len,
                 stats.trace_ids,
                 stats.time_index_keys,
                 stats.service_keys,
-                stats.lru_len,
                 stats.trace_ids_refs,
                 stats.time_index_refs,
                 stats.service_index_refs,

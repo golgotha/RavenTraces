@@ -1,6 +1,5 @@
 use crate::span::{AttributeValue, SizeEstimator, Span, TraceId};
 use crate::types::MemtableConfig;
-use indexmap::IndexSet;
 use log::{debug, info};
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
@@ -28,7 +27,6 @@ pub struct MemtableStats {
     pub trace_ids: usize,
     pub time_index_keys: usize,
     pub service_keys: usize,
-    pub lru_len: usize,
     pub trace_ids_refs: usize,
     pub time_index_refs: usize,
     pub service_index_refs: usize,
@@ -42,7 +40,6 @@ pub struct Memtable {
     config: MemtableConfig,
     traces: HashMap<u64, Entry>,
     time_index: BTreeMap<Microseconds, Vec<u64>>,
-    lru: IndexSet<u64>,
     services: HashMap<String, Vec<u64>>,
     size: usize,
     created_at: Instant,
@@ -58,7 +55,6 @@ impl Memtable {
             config,
             traces: HashMap::with_capacity(initial_capacity),
             time_index: BTreeMap::new(),
-            lru: IndexSet::new(),
             services: HashMap::new(),
             size: 0,
             created_at: Instant::now(),
@@ -75,7 +71,6 @@ impl Memtable {
 
     pub fn insert(&mut self, trace_id: &TraceId, span: Span) {
         let trache_id_key = trace_id.fnv1a_64();
-        self.touch(&trache_id_key);
         let span_timestamp = span.timestamp;
         let estimated_size = span.estimated_size_bytes();
 
@@ -180,13 +175,10 @@ impl Memtable {
     pub fn stats(&self) -> MemtableStats {
         MemtableStats {
             spans_len: self.traces.len(),
-            // trace_ids: self.trace_index.len(),
             trace_ids: self.traces.len(),
             time_index_keys: self.time_index.len(),
             service_keys: self.services.len(),
-            lru_len: self.lru.len(),
             trace_ids_refs: self.traces.values().map(|v| v.len()).sum(),
-            // trace_ids_refs: self.trace_index.values().map(|v| v.len()).sum(),
             time_index_refs: self.time_index.values().map(|v| v.len()).sum(),
             service_index_refs: self.services.values().map(|v| v.len()).sum(),
             span_size_bytes: self.size,
@@ -209,7 +201,6 @@ impl Memtable {
             .values()
             .map(|v| v.capacity() * size_of::<usize>())
             .sum::<usize>();
-        size += self.lru.capacity() * size_of::<TraceId>();
 
         size += self.services.capacity() * (size_of::<String>() + size_of::<Vec<usize>>());
         size += self.services
@@ -219,11 +210,6 @@ impl Memtable {
             })
             .sum::<usize>();
         size
-    }
-
-    fn touch(&mut self, trace_id_key: &u64) {
-        self.lru.shift_remove(trace_id_key);
-        self.lru.insert(*trace_id_key);
     }
 
     fn age(&self) -> Duration {
