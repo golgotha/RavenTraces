@@ -1,5 +1,5 @@
 use std::io::{BufReader, Read};
-use std::path::PathBuf;
+use std::path::{Path};
 use std::sync::Arc;
 use common::binary_readers::{read_n_bytes, read_u32};
 use common::serialization::Readable;
@@ -39,7 +39,7 @@ pub struct SStableReaderImpl {
 }
 
 impl SStableReaderImpl {
-    pub fn new(base_dir: PathBuf) -> Self {
+    pub fn new<P: AsRef<Path>>(base_dir: P) -> Self {
         Self {
             storage: Box::new(LocalBlockStorage::new(base_dir)),
         }

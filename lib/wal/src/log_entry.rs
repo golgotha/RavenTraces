@@ -132,7 +132,11 @@ impl<'a> Iterator for LogEntryIterator<'a> {
                 // open segment
                 let segment = match self.wal.open_segment_by_id(self.current_segment_id) {
                     Ok(segment) => segment,
-                    Err(err) => return Some(Err(err)),
+                    Err(err) => {
+                        // Skip segment and move to the next one
+                        self.current_segment_id += 1;
+                        return Some(Err(err))
+                    },
                 };
 
                 let segment_size = match segment.segment_size() {
@@ -170,8 +174,6 @@ impl<'a> Iterator for LogEntryIterator<'a> {
                 payload: Some(log_entry.payload),
             }));
         }
-
-
     }
 }
 

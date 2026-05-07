@@ -1,14 +1,15 @@
+use crate::querier::storage_search::{BlockStorageSearch, LocalStorageSearch};
 use log::{debug, error, info};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc};
+use std::sync::Arc;
 use storage::block::BlockId;
-use storage::corvus_engine::{CorvusEngine};
+use storage::corvus_engine::CorvusEngine;
 use storage::errors::StorageError;
 use storage::search_request::SearchRequest;
 use storage::span::{Span, TraceId};
 use storage::sstable_reader::{SStableReader, SStableReaderImpl};
-use crate::querier::storage_search::{BlockStorageSearch, LocalStorageSearch};
+use storage::types::StorageConfig;
 
 pub struct BlockRef {
     block_id: BlockId,
@@ -19,17 +20,22 @@ pub struct BlockRef {
 pub struct TraceQuerier {
     corvus_engine: Arc<dyn CorvusEngine>,
     storage: Box<dyn SStableReader + Send + Sync>,
-    storage_search: LocalStorageSearch,
+    storage_search: Box<dyn BlockStorageSearch>,
     block_index: HashMap<TraceId, BlockRef>,
 }
 
 impl TraceQuerier {
-    pub fn new(base_dir: PathBuf, corvus_engine: Arc<dyn CorvusEngine>) -> TraceQuerier {
+    pub fn new(
+        base_dir: PathBuf,
+        corvus_engine: Arc<dyn CorvusEngine>,
+        storage_config: StorageConfig,
+    ) -> TraceQuerier {
+        let sstable_reader = Box::new(SStableReaderImpl::new(base_dir.as_path()));
         Self {
             corvus_engine,
-            storage: Box::new(SStableReaderImpl::new(base_dir.clone())),
+            storage: Box::new(SStableReaderImpl::new(base_dir.as_path())),
             block_index: HashMap::new(),
-            storage_search: LocalStorageSearch::new(Box::new(SStableReaderImpl::new(base_dir)))
+            storage_search: Box::new(LocalStorageSearch::new(sstable_reader, storage_config)),
         }
     }
 
@@ -63,7 +69,9 @@ impl TraceQuerier {
 
     pub fn get_trace(&self, trace_id: &TraceId) -> Vec<Span> {
         let mem_spans = self.corvus_engine.fetch_trace(trace_id);
-        let block_storage_spans: Vec<Span> = self.storage_search.search(&SearchRequest::for_trace_id(trace_id))
+        let block_storage_spans: Vec<Span> = self
+            .storage_search
+            .search(&SearchRequest::for_trace_id(trace_id))
             .expect("An error occurred. Can not search for block storage");
 
         let spans = merge_spans(mem_spans, block_storage_spans);
@@ -82,7 +90,11 @@ impl TraceQuerier {
         spans_result.extend(spans);
 
         if spans_result.len() < limit {
-            debug!("Spans in memtable {} less than limit {}. Search in block storage.", spans_result.len(), limit);
+            debug!(
+                "Spans in memtable {} less than limit {}. Search in block storage.",
+                spans_result.len(),
+                limit
+            );
             let storage_request = SearchRequest {
                 trace_id: search_request.trace_id.clone(),
                 service_name: search_request.service_name,
@@ -104,11 +116,7 @@ impl TraceQuerier {
     }
 }
 
-
-fn merge_spans(
-    mem_table_spans: Vec<Span>,
-    block_storage_spans: Vec<Span>,
-) -> Vec<Span> {
+fn merge_spans(mem_table_spans: Vec<Span>, block_storage_spans: Vec<Span>) -> Vec<Span> {
     let mut merged = mem_table_spans
         .into_iter()
         .chain(block_storage_spans)

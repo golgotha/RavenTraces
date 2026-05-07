@@ -15,4 +15,5 @@ pub mod sstable_reader;
 pub mod bloom;
 pub mod flush_service;
 pub mod search_request;
+pub mod bloom_filter_cache;
 

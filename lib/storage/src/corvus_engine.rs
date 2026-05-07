@@ -8,8 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use log::{error, info};
-use serde::{Deserialize, Serialize};
-use wal::log_entry::{LogEntry};
+use serde::{Deserialize};
+use wal::errors::WalError;
+use wal::log_entry::{LogEntry, LogEntryPointer};
 use wal::wal::{WAL};
 use crate::flush_service::FlushService;
 use crate::search_request::SearchRequest;
@@ -32,7 +33,7 @@ pub trait CorvusEngine: Send + Sync {
     fn fetch_services(&self) -> Vec<String>;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CorvusEngineConfig {
     pub mem_table_config: MemtableConfig
 }
@@ -158,14 +159,18 @@ impl CorvusEngine for CorvusEngineImpl {
 
     fn replay_wal(&self, wal: &mut WAL, mem_table: &mut Memtable) {
         info!("Replaying WAL, it takes a while");
-        // let entries = wal.replay()
-        //     .expect("Error while replaying WAL");
         let entries = wal.replay()
             .expect("Error while replaying WAL");
 
         let mut entries_count = 0;
         for entry in entries {
-            let pointer = entry.unwrap();
+            let pointer = match entry {
+                Ok(pointer) => {pointer}
+                Err(e) => {
+                    error!("Error while reading WAL entry: {}", e.to_string());
+                    continue;
+                }
+            };
 
             if let Some(payload) = pointer.payload {
                 let span = Span::deserialize(&payload);

@@ -61,8 +61,8 @@ fn convert_otlp_request(request: ExportTraceServiceRequest) -> Vec<Span> {
                     duration,
                     attributes: convert_attributes(span.attributes),
                     events: vec![],
-                    status_code: convert_status_code(span.status.clone()),
-                    status_message: convert_status_message(span.status.clone()),
+                    status_code: convert_status_code(span.status.as_ref()),
+                    status_message: convert_status_message(span.status.as_ref()),
                 });
             }
         }
@@ -115,17 +115,14 @@ fn convert_any_value(any_value: AnyValue) -> Option<AttributeValue> {
     }
 }
 
-fn convert_status_message(status: Option<Status>) -> Option<String> {
-    status.and_then(|s| {
-        if s.message.is_empty() {
-            None
-        } else {
-            Some(s.message)
-        }
-    })
+fn convert_status_message(status: Option<&Status>) -> Option<String> {
+    status
+        .map(|s| s.message.as_str())
+        .filter(|message| !message.is_empty())
+        .map(String::from)
 }
 
-fn convert_status_code(status: Option<Status>) -> Option<u32> {
+fn convert_status_code(status: Option<&Status>) -> Option<u32> {
     status.map(|s| s.code as u32)
 }
 

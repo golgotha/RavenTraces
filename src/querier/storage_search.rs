@@ -1,32 +1,43 @@
 use log::{debug, error, trace};
+use std::sync::Arc;
 use storage::block::BlockId;
-use storage::bloom::bloom_filter::BloomFilter;
+use storage::bloom_filter_cache::BloomCacheAccessor;
 use storage::errors::StorageError;
 use storage::search_request::SearchRequest;
 use storage::span::{AttributeValue, Span};
-use storage::sstable_reader::{SStableReader};
+use storage::sstable_reader::SStableReader;
+use storage::types::StorageConfig;
 
 type SearchResult<T> = Result<T, StorageError>;
 
-pub trait BlockStorageSearch {
-
+pub trait BlockStorageSearch: Send + Sync {
     fn search(&self, query: &SearchRequest) -> Result<Vec<Span>, StorageError>;
-
 }
 
 pub struct LocalStorageSearch {
-    storage: Box<dyn SStableReader + Send + Sync>,
+    bloom_accessor: BloomCacheAccessor,
+    storage: Arc<Box<dyn SStableReader + Send + Sync>>,
 }
 
 impl LocalStorageSearch {
+    pub fn new(
+        storage: Box<dyn SStableReader + Send + Sync>,
+        storage_config: StorageConfig,
+    ) -> Self {
+        let storage: Arc<Box<dyn SStableReader + Send + Sync>> = Arc::from(storage);
 
-    pub fn new(storage: Box<dyn SStableReader + Send + Sync>) -> Self {
-        Self { storage }
+        let bloom_filter_capacity = storage_config.bloom_filter.cache.capacity;
+        let bloom_accessor =
+            BloomCacheAccessor::new_local_accessor(Arc::clone(&storage), bloom_filter_capacity);
+
+        Self {
+            storage,
+            bloom_accessor,
+        }
     }
 }
 
 impl BlockStorageSearch for LocalStorageSearch {
-
     fn search(&self, query: &SearchRequest) -> SearchResult<Vec<Span>> {
         let storage_meta = match self.storage.read_blocks_meta() {
             Ok(meta) => meta,
@@ -43,25 +54,31 @@ impl BlockStorageSearch for LocalStorageSearch {
         let mut trace_spans: Vec<Span> = Vec::new();
         for block in storage_meta.blocks {
             let block_id = BlockId::new(block);
-
             let block_iterator = match query.trace_id {
                 Some(trace_id) => {
-                    let bloom_filter = self.storage.read_bloom_filter(&block_id)?;
+                    let might_exists = self.bloom_accessor.might_contain(&block_id, &trace_id)?;
 
-                    if bloom_filter.might_contain(&trace_id) {
+                    if might_exists {
                         debug!("Trace found in bloom filter in block {}", block_id.id);
                         let block_index = self.storage.read_block_index(&block_id)?;
                         let Some(entry) = block_index.find_trace_id(&trace_id) else {
                             continue;
                         };
 
-                        self.storage.read_block_slice_iter(&block_id, entry.offset(), entry.length() as u64)?
+                        self.storage.read_block_slice_iter(
+                            &block_id,
+                            entry.offset(),
+                            entry.length() as u64,
+                        )?
                     } else {
                         // no trace in block, go to the next block
-                        trace!("No trace found in bloom filter in block {}. Move to the next block", block_id.id);
-                        continue
+                        trace!(
+                            "No trace found in bloom filter in block {}. Move to the next block",
+                            block_id.id
+                        );
+                        continue;
                     }
-                },
+                }
                 None => self.storage.read_block_iter(&block_id, 0)?,
             };
 
