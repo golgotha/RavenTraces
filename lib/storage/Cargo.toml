@@ -10,15 +10,19 @@ license = "Apache-2.0"
 [features]
 testing = []
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [dependencies]
 common = { path = "../common" }
 wal = { path = "../wal"}
 metrics = {path = "../metrics"}
+
 indexmap = "2.13.0"
-log = "0.4"
-tempfile = "3.27.0"
-serde = { version = "1.0.228", features = ["derive"] }
-uuid        = { version = "1", features = ["v7"] }
-serde_json = "1.0.149"
-murmur3 = "0.5.2"
-rand = "0.10.1"
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+murmur3.workspace = true
+rand.workspace = true
+ulid.workspace = true

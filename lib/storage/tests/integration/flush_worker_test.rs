@@ -33,10 +33,10 @@ mod tests {
         println!("{}", generate_trace_id());
 
         let dir_path = Path::new(dir.path());
-        let mut wal = WAL::open(dir_path).expect("could not open traces.wal");
 
         let config = MemtableConfig {
             max_size_bytes: 1024,
+            max_age_seconds: 10,
             initial_capacity: 2,
         };
 
@@ -47,13 +47,13 @@ mod tests {
             let trace_id  = TraceId::from_str(generate_trace_id().as_str()).unwrap();
             let span_id = SpanId::from_str(generate_span_id().as_str()).unwrap();
             let span = make_span(trace_id, span_id);
-            memtable.insert(&trace_id, &span, 1);
+            memtable.insert(&trace_id, span);
             traces.push(trace_id);
         }
 
         let table_writer = SStableWriterImpl::new(dir_path.to_path_buf());
         let mut flusher = DiskFlushWorker::new(table_writer, 64 * 1024);
-        let flusher_result = flusher.flush(&mut wal, &mut memtable);
+        let flusher_result = flusher.flush(memtable);
         assert!(flusher_result.is_ok());
 
         let storage = LocalBlockStorage::new(dir_path);
@@ -115,8 +115,6 @@ mod tests {
             events: vec![],
             status_code: Some(1),
             status_message: Some("test messgae".to_string()),
-            local_service: None,
-            remote_service: None,
         };
         span
     }

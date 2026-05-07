@@ -40,8 +40,6 @@ mod tests {
             events: vec![],
             status_code: Some(1),
             status_message: Some("test message".to_string()),
-            local_service: None,
-            remote_service: None,
         };
         span
     }
@@ -113,8 +111,7 @@ mod tests {
                 .unwrap();
             let span= make_span(trace_id, span_id, format!("test span {}", index));
 
-            let payload = span.serialize();
-            block_data.add_span(&payload);
+            block_data.add_span(&trace_id, &span.serialize());
             expected_spans.push(span);
         }
 

@@ -11,28 +11,62 @@ readme = "README.md"
 #[lints]
 #workspace = true
 
-[dependencies]
-common = { path = "lib/common" }
-storage = { path = "lib/storage" }
-wal = { path = "lib/wal"}
-metrics = {path = "lib/metrics"}
+[workspace]
+members = [
+    "lib/common",
+    "lib/metrics",
+    "lib/storage",
+    "lib/wal",
+]
 
+[dependencies]
+storage = { path = "lib/storage" }
+metrics = {path = "lib/metrics"}
+actix-web.workspace = true
+actix-web-prom.workspace = true
+flexi_logger.workspace = true
+log.workspace = true
+colored.workspace = true
+prost.workspace = true
+opentelemetry-proto.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[workspace.dependencies]
 actix-web = "4.13.0"
 actix-web-prom = "0.10.0"
 prometheus = "0.14.0"
 lazy_static = "1.5.0"
 flexi_logger = "0.31"
 log = "0.4.29"
+tempfile = "3.27.0"
 colored = "3.1.1"
 serde_json = "1.0.149"
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
-env_logger = "0.11.10"
-validator = "0.20.0"
+prost = "0.14.3"
+opentelemetry-proto = "0.31.0"
+clap = { version = "4.6.1", features = ["derive"] }
+crc32fast = "1.5.0"
+murmur3 = "0.5.2"
+rand = "0.10.1"
+uuid = { version = "1", features = ["v7"] }
+ulid = "1.2.1"
 
-[workspace]
-members = [
-    "lib/common", "lib/metrics",
-    "lib/storage",
-    "lib/wal",
-]
+# Jemalloc
+[target.'cfg(all(not(target_env = "msvc"), any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
+tikv-jemallocator = { version = "0.6.1", features = [
+    "stats",
+    "unprefixed_malloc_on_supported_platforms",
+    "background_threads",
+    "profiling",
+] }
+tikv-jemalloc-ctl = { version = "0.6.1", features = ["stats"] }
+
+
+
+[profile.release]
+debug = true
+strip = false

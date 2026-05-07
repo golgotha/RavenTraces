@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemtableConfig {
     pub max_size_bytes: usize,
+    pub max_age_seconds: u64,
     // Pre-allocate the
     pub initial_capacity: usize,
 }
@@ -16,7 +17,7 @@ pub struct StorageConfig {
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
-            max_block_size: 256 * 1024,
+            max_block_size: 16 * 1024 * 1024,
             mem_table: MemtableConfig::default(),
         }
     }
@@ -25,8 +26,9 @@ impl Default for StorageConfig {
 impl Default for MemtableConfig {
     fn default() -> Self {
         Self {
-            max_size_bytes: 64 * 1024 * 1024,
-            initial_capacity: 10000,
+            max_size_bytes: 128 * 1024 * 1024,
+            max_age_seconds: 10,
+            initial_capacity: 10_000,
         }
     }
 }

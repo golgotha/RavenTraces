@@ -2,18 +2,20 @@ use std::fs;
 use std::fs::{DirEntry, File};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use log::{debug, info, Level};
+use log::{debug, info, warn, Level};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use common::clock::{now_millis};
 use crate::errors::WalError;
-use crate::log_entry::{LogEntry, LogEntryPointer};
+use crate::log_entry::{LogEntryIterator, LogEntry, LogEntryPointer, LogEntryIteratorResult};
 use crate::segment::{Segment};
 use crate::storage::{Readable, Storage, Writable};
 use crate::storage::storage::FileStorage;
 
 const CHECKPOINT_FILE_NAME: &str = "checkpoint.json";
 const FILE_EXTENSION: &str = ".wal";
+
+type WalResult<T> = Result<T, WalError>;
 
 #[derive(Debug)]
 pub struct WalOptions {
@@ -35,7 +37,7 @@ impl Default for WalOptions {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct Checkpoint {
+pub struct Checkpoint {
     safe_segment: u32,
 }
 
@@ -97,69 +99,50 @@ impl WAL {
         Ok(wal)
     }
 
-    pub fn append(&mut self, entry: &LogEntry) -> Result<AppendResult, WalError> {
-        if self.should_rotate(entry) {
+    pub fn append(&mut self, entry: LogEntry) -> Result<AppendResult, WalError> {
+        if self.should_rotate(&entry) {
             info!("Rotate segment");
             self.rotate_segment()?;
         }
+        let block_size = entry.header().block_size;
         self.active_segment.append(entry)?;
         Ok(AppendResult {
             segment_id: self.active_segment.header().segment_id(),
             offset: self.active_segment.segment_size()?,
-            length: entry.header().block_size,
+            length: block_size,
             last_update: now_millis(),
         })
     }
 
-    pub fn rotate_segment(&mut self) -> Result<(), WalError> {
+    pub fn rotate_segment(&mut self) -> Result<Checkpoint, WalError> {
+        let safe_segment = self.active_segment.segment_id();
         let segment  = self.active_segment.create_next_segment(self.dir.to_path_buf())?;
+        debug!("Rotate segment with safe segment. The segment checkpoint: {}, new segment id: {}", safe_segment, segment.segment_id());
         self.active_segment = segment;
-        Ok(())
+
+        let checkpoint = Checkpoint { safe_segment };
+        self.last_checkpoint = Some(checkpoint);
+        Ok(Checkpoint { safe_segment })
     }
 
-    pub fn replay(&mut self) -> Result<Vec<LogEntryPointer>, WalError> {
+    pub fn replay(&mut self) -> LogEntryIteratorResult {
         info!("Replaying WAL entries");
-
-        let mut offset = Segment::header_size() as u64;
         let checkpoint = self.read_checkpoint();
         let safe_segment = checkpoint.map(|c| c.safe_segment)
-            .unwrap_or(0);
-
+            .unwrap_or(1);
+        
         info!("Last safe segment #{}", safe_segment);
-
-        let mut entries = Vec::new();
-        let mut current_segment_id = safe_segment;
-        while current_segment_id < self.last_segment_id {
-            current_segment_id += 1;
-            debug!("Opening segment={}", current_segment_id);
-            let segment = self.open_segment_by_id(current_segment_id)?;
-            let segment_size = segment.segment_size()?;
-
-            while offset < segment_size {
-                let log_entry : LogEntry = self.active_segment.read_log_entry(offset)?;
-                let segment_id = self.active_segment.header().segment_id();
-                entries.push(LogEntryPointer {
-                    segment_id,
-                    offset,
-                    payload: Some(log_entry.payload),
-                });
-                offset += log_entry.header.block_size as u64;
-            }
-        }
-
-        info!("Reading {} WAL entries completed", entries.len());
-        Ok(entries)
+        let iterator = LogEntryIterator::new(self, safe_segment, self.last_segment_id);
+        Ok(Box::new(iterator))
     }
 
-    pub fn checkpoint(&mut self, max_segment_id: u32) -> Result<(), WalError> {
+    pub fn commit_checkpoint(&mut self) -> Result<(), WalError> {
         let checkpoint_file_path = self.dir.to_path_buf().join(CHECKPOINT_FILE_NAME);
         let mut storage = FileStorage::open(checkpoint_file_path, false)?;
-        let checkpoint = Checkpoint {
-            safe_segment: max_segment_id
-        };
-        storage.write(&checkpoint)?;
-        self.last_checkpoint = Some(checkpoint);
-        self.rotate_segment()?;
+        if let Some(checkpoint) = &self.last_checkpoint {
+            debug!("Committing WAL checkpoint: {}", checkpoint.safe_segment);
+            storage.write(checkpoint)?;
+        }
         Ok(())
     }
 
@@ -221,7 +204,7 @@ impl WAL {
         }
     }
 
-    fn open_segment_by_id(&self, segment_id: u32) -> Result<Segment, WalError> {
+    pub(crate) fn open_segment_by_id(&self, segment_id: u32) -> Result<Segment, WalError> {
         info!("Opening WAL directory entry");
         let segment_name = Segment::get_segment_name(segment_id);
         let segment_path = Path::new(self.dir.as_path())
@@ -284,6 +267,13 @@ impl Readable for Checkpoint {
 
     fn num_bytes_to_read() -> usize {
         size_of::<Checkpoint>()
+    }
+}
+
+impl Checkpoint {
+
+    pub fn checkpoint_id(&self) -> u32 {
+        self.safe_segment
     }
 }
 
@@ -413,7 +403,7 @@ mod tests {
     fn append_single_entry_succeeds() {
         let dir = temp_dir();
         let mut wal = WAL::open(dir.path()).expect("open failed");
-        wal.append(&make_entry(b"hello")).expect("append failed");
+        wal.append(make_entry(b"hello")).expect("append failed");
     }
 
     #[test]
@@ -421,7 +411,7 @@ mod tests {
         let dir = temp_dir();
         let mut wal = WAL::open(dir.path()).expect("open failed");
         for i in 0u8..10 {
-            wal.append(&make_entry(&[i; 32])).expect("append failed");
+            wal.append(make_entry(&[i; 32])).expect("append failed");
         }
     }
 
@@ -436,7 +426,7 @@ mod tests {
 
         // Fill past the capacity threshold to trigger rotation.
         for _ in 0..4 {
-            wal.append(&make_entry(&[0u8; 32])).expect("append failed");
+            wal.append(make_entry(&[0u8; 32])).expect("append failed");
         }
 
         let wal_files: Vec<_> = fs::read_dir(dir.path().join("wal"))

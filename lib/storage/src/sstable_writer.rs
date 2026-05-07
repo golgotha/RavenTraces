@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use log::info;
+use log::{trace};
 use common::serialization::Writable;
 use crate::block::{BlockId, BlockMeta, BloomFilterBlock, DataBlock, StorageMeta};
 use crate::block_index::BlockIndex;
@@ -12,7 +12,7 @@ pub trait SStableWriter {
 
     fn flush_index(&self, block_metadata: &BlockMeta, block_index: &BlockIndex) -> Result<(), StorageError>;
     
-    fn flush_bloom_filter(&self, block_metadata: &BlockMeta, bloom_filter: &BloomFilterBlock) -> Result<(), StorageError>;
+    fn flush_bloom_filter(&self, block_metadata: &BlockMeta, bloom_filter: BloomFilterBlock) -> Result<(), StorageError>;
 
 }
 
@@ -28,7 +28,7 @@ impl SStableWriterImpl {
     }
 
     fn open_block(&mut self, block_id: &BlockId) -> Result<(), StorageError> {
-        info!("Creating a new block file: {}", block_id.to_string());
+        trace!("Creating a new block file: {}", block_id.to_string());
         self.storage.open(block_id)?;
         Ok(())
     }
@@ -37,7 +37,7 @@ impl SStableWriterImpl {
         let block_metadata = BlockMeta::new(4 * 1024);
 
         let block_id = block_metadata.id.clone();
-        info!("Creating a new block file: {}", block_id.to_string());
+        trace!("Creating a new block file: {}", block_id.to_string());
         self.storage.open(&block_id)?;
         Ok(block_metadata)
     }
@@ -77,8 +77,8 @@ impl SStableWriter for SStableWriterImpl {
         Ok(())
     }
 
-    fn flush_bloom_filter(&self, block_metadata: &BlockMeta, bloom_filter: &BloomFilterBlock) -> Result<(), StorageError> {
-        self.storage.write_bloom_filter(&block_metadata.id, &bloom_filter)?;
+    fn flush_bloom_filter(&self, block_metadata: &BlockMeta, bloom_filter: BloomFilterBlock) -> Result<(), StorageError> {
+        self.storage.write_bloom_filter(&block_metadata.id, bloom_filter)?;
         Ok(())
     }
 }

@@ -7,6 +7,7 @@ use log::info;
 use std::io;
 use std::sync::Mutex;
 use metrics::metrics;
+use crate::api::otlp::otlp_api::post_otlp_span;
 use crate::settings::Settings;
 use crate::api::zipkin::zipkin_api::{post_zipkin_span, get_zipkin_services,
                                      get_zipkin_spans, get_zipkin_trace, get_zipkin_traces};
@@ -25,8 +26,8 @@ async fn health() -> HttpResponse {
 
 pub fn init(
     settings: &Settings,
-    distributor: Mutex<Distributor>,
-    querier: Mutex<ZipkinQuerier>,
+    distributor: Distributor,
+    querier: ZipkinQuerier,
 ) -> io::Result<()> {
     let host = &settings.service.host;
     let port = &settings.service.http_port;
@@ -51,6 +52,10 @@ pub fn init(
                     .wrap(prometheus)
                     .app_data(distributor.clone())
                     .app_data(querier.clone())
+                    .service(
+                        web::scope("/otlp")
+                            .service(post_otlp_span)
+                    )
                     .service(
                         web::scope("/zipkin")
                             .service(get_zipkin_trace)

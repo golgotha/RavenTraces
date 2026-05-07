@@ -13,4 +13,6 @@ pub mod corvus_engine;
 pub mod types;
 pub mod sstable_reader;
 pub mod bloom;
+pub mod flush_service;
+pub mod search_request;
 
