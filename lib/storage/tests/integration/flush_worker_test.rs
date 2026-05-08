@@ -8,7 +8,7 @@ mod tests {
     use storage::block_storage::{BlockStorage, LocalBlockStorage};
     use storage::bloom::bloom_filter::BloomFilter;
     use storage::flush_worker::{DiskFlushWorker, FlushWorker};
-    use storage::index::service_name_index::ServiceNameIndex;
+    use storage::index::service_name_index::{LocalServiceNameIndexReader, LocalServiceNameIndexWriter, ServiceNameIndex};
     use storage::memtable::Memtable;
     use storage::span::{AttributeValue, Span, SpanId, SpanKind, TraceId};
     use storage::sstable_writer::SStableWriterImpl;
@@ -53,7 +53,12 @@ mod tests {
         }
 
         let table_writer = SStableWriterImpl::new(dir_path.to_path_buf());
-        let service_name_index =  Arc::new(ServiceNameIndex::load_or_create(&dir_path).unwrap());
+
+        let service_name_index_reader = Box::new(LocalServiceNameIndexReader::new(&dir_path));
+        let service_name_index_writer = Box::new(LocalServiceNameIndexWriter::new(&dir_path));
+        let service_name_index =  Arc::new(ServiceNameIndex::new(service_name_index_reader, service_name_index_writer));
+        service_name_index.load_or_create().unwrap();
+
         let mut flusher = DiskFlushWorker::new(table_writer, service_name_index, 64 * 1024);
         let flusher_result = flusher.flush(memtable);
         assert!(flusher_result.is_ok());

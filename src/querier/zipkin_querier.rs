@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use storage::search_request::SearchRequest;
 use storage::span::{AttributeValue, Span, SpanEvent, SpanKind, TraceId};
 use crate::api::zipkin::json_model::{ZipkinAnnotation, ZipkinEndpoint, ZipkinKind, ZipkinSpan};
@@ -46,6 +46,11 @@ impl Querier<ZipkinSpan> for ZipkinQuerier {
             .collect::<Vec<ZipkinSpan>>();
 
         Ok(spans)
+    }
+
+    fn search_span_names(&self, search_request: SearchRequest) -> Result<HashSet<String>, QuerierError> {
+        let span_names = self.trace_querier.search_span_names(search_request);
+        Ok(span_names)
     }
 
     fn get_services(&self) -> Result<Vec<String>, QuerierError> {

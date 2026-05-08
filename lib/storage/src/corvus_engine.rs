@@ -1,7 +1,10 @@
 use crate::errors::EngineError;
 use crate::flush_service::FlushService;
 use crate::flush_worker::{DiskFlushWorker, FlushWorker};
-use crate::index::service_name_index::ServiceNameIndex;
+use crate::index::service_name_index::{
+    LocalServiceNameIndexReader, LocalServiceNameIndexWriter, ServiceNameIndex,
+    ServiceNameIndexReader, ServiceNameIndexWriter,
+};
 use crate::memtable::Memtable;
 use crate::search_request::SearchRequest;
 use crate::span::{AttributeValue, SERVICE_NAME_ATTRIBUTE, Span, TraceId};
@@ -58,17 +61,22 @@ impl CorvusEngineImpl {
         let wal = Arc::new(Mutex::new(wal));
 
         let stable_writer = SStableWriterImpl::new(Path::new(&base_dir).to_path_buf());
-        let service_name_index = Arc::new(
-            ServiceNameIndex::load_or_create(&base_dir)
-                .expect("could not create service name index"),
-        );
+
+        let service_name_index_reader = Box::new(LocalServiceNameIndexReader::new(&base_dir));
+        let service_name_index_writer = Box::new(LocalServiceNameIndexWriter::new(&base_dir));
+        let service_name_index = Arc::new(ServiceNameIndex::new(
+            service_name_index_reader,
+            service_name_index_writer,
+        ));
+        service_name_index.load_or_create()
+            .expect("could not load local service name index");
 
         let flush_worker = Box::new(DiskFlushWorker::new(
             stable_writer,
             Arc::clone(&service_name_index),
             max_block_size,
         ));
-        
+
         let flush_worker: Arc<Mutex<Box<dyn FlushWorker + Send + Sync>>> =
             Arc::new(Mutex::new(flush_worker));
 

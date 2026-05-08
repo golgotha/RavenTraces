@@ -1,6 +1,6 @@
 use crate::querier::storage_search::{BlockStorageSearch, LocalStorageSearch};
 use log::{debug, error, info};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use storage::block::BlockId;
@@ -109,6 +109,10 @@ impl TraceQuerier {
         }
 
         Ok(spans_result)
+    }
+    
+    pub fn search_span_names(&self, search_request: SearchRequest) -> HashSet<String> {
+        self.storage_search.search_span_names(&search_request)
     }
 
     pub fn query_by_time(&self, start_ts: u64, end_ts: u64) -> Result<Vec<Span>, StorageError> {

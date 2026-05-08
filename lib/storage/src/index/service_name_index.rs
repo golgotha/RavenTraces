@@ -5,32 +5,30 @@ use std::sync::RwLock;
 use crate::errors::StorageError;
 
 pub struct ServiceNameIndex {
-    path: PathBuf,
+    reader: Box<dyn ServiceNameIndexReader>,
+    writer: Box<dyn ServiceNameIndexWriter>,
     services: RwLock<HashSet<String>>,
 }
 
 impl ServiceNameIndex {
-    pub fn load_or_create(path: impl Into<PathBuf>) -> Result<Self, StorageError> {
-        let path = path.into();
-        let file_path = path.join("services.json");
 
-        let services = if file_path.exists() {
-            let bytes = fs::read(&file_path)?;
+    pub fn new(reader: Box<dyn ServiceNameIndexReader>, writer: Box<dyn ServiceNameIndexWriter>) -> Self {
+        Self {
+            reader,
+            writer,
+            services: RwLock::new(HashSet::new()),
+        }
+    }
 
-            if bytes.is_empty() {
-                HashSet::new()
-            } else {
-                serde_json::from_slice::<HashSet<String>>(&bytes)
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
-            }
-        } else {
-            HashSet::new()
-        };
+    pub fn load_or_create(&self) -> Result<(), StorageError> {
+        let service_list = self.reader.read_services()?;
+        let mut services = self.services.write().unwrap();
 
-        Ok(Self {
-            path,
-            services: RwLock::new(services),
-        })
+        for service in service_list {
+            services.insert(service);
+        }
+
+        Ok(())
     }
 
     pub fn add(&self, service_name: &str) {
@@ -59,6 +57,65 @@ impl ServiceNameIndex {
 
     pub fn flush(&self) -> Result<(), StorageError> {
         let services = self.list();
+        self.writer.write_services(services)
+    }
+}
+
+pub trait ServiceNameIndexReader: Send + Sync {
+    fn read_services(&self) -> Result<HashSet<String>, StorageError>;
+}
+
+pub trait ServiceNameIndexWriter: Send + Sync {
+    fn write_services(&self, services: Vec<String>) -> Result<(), StorageError>;
+}
+
+pub struct LocalServiceNameIndexReader {
+    path: PathBuf,
+}
+
+impl LocalServiceNameIndexReader {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+        }
+    }
+}
+
+impl ServiceNameIndexReader for LocalServiceNameIndexReader {
+    fn read_services(&self) -> Result<HashSet<String>, StorageError> {
+        let file_path = self.path.join("services.json");
+
+        let services = if file_path.exists() {
+            let bytes = fs::read(&file_path)?;
+
+            if bytes.is_empty() {
+                HashSet::new()
+            } else {
+                serde_json::from_slice::<HashSet<String>>(&bytes)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+            }
+        } else {
+            HashSet::new()
+        };
+
+        Ok(services)
+    }
+}
+
+pub struct LocalServiceNameIndexWriter {
+    path: PathBuf,
+}
+
+impl LocalServiceNameIndexWriter {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+        }
+    }
+}
+
+impl ServiceNameIndexWriter for LocalServiceNameIndexWriter {
+    fn write_services(&self, services: Vec<String>) -> Result<(), StorageError> {
         let json = serde_json::to_vec(&services)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
@@ -68,8 +125,4 @@ impl ServiceNameIndex {
 
         Ok(())
     }
-}
-
-pub trait ServiceNameIndexReader {
-    fn read_services() -> Result<HashSet<String>, StorageError>;
 }

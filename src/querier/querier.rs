@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use storage::search_request::SearchRequest;
 use storage::span::{TraceId};
 
@@ -21,6 +22,8 @@ pub trait Querier<R>: Send + Sync {
     fn search_spans_between(&self, start_ts: u64, end_ts: u64) -> Result<Vec<R>, QuerierError>;
 
     fn search_traces(&self, search_request: SearchRequest) -> Result<Vec<R>, QuerierError>;
+    
+    fn search_span_names(&self, search_request: SearchRequest) -> Result<HashSet<String>, QuerierError>;
 
     fn get_services(&self) -> Result<Vec<String>, QuerierError>;
 }
