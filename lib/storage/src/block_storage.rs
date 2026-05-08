@@ -1,4 +1,4 @@
-use crate::block::{BlockId, BlockMeta, BloomFilterBlock, StorageMeta};
+use crate::block::{BlockId, BlockMeta, BloomFilterBlock, ServicesInfo, StorageMeta};
 use crate::block_index::{BlockIndex, BlockIndexEntry};
 use crate::errors::StorageError;
 use common::serialization::{Readable, Writable};
@@ -8,7 +8,6 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 const BLOCKS_DIR_NAME: &str = "blocks";
 const INDEX_FILE_NAME: &str = "index.bin";
@@ -48,9 +47,11 @@ pub trait BlockStorage: Send + Sync {
     
     fn read_block_len(&self, block_id: &BlockId, offset: u64, len: u64) -> BlockStorageResult<Box<dyn Read + Send>>;
 
-    fn read_block_index(&self, id: &BlockId) -> BlockStorageResult<BlockIndex>;
+    fn read_block_index(&self, block_id: &BlockId) -> BlockStorageResult<BlockIndex>;
 
-    fn read_bloom_filter(&self, id: &BlockId) -> BlockStorageResult<BloomFilterBlock>;
+    fn read_block_meta(&self, block_id: &BlockId) -> BlockStorageResult<BlockMeta>;
+
+    fn read_bloom_filter(&self, block_id: &BlockId) -> BlockStorageResult<BloomFilterBlock>;
 
     fn list_blocks(&self) -> BlockStorageResult<Vec<BlockId>>;
 
@@ -59,23 +60,14 @@ pub trait BlockStorage: Send + Sync {
 }
 
 #[derive(Debug)]
-struct BlockReference {
-    data_file: File,
-    bloom_file: File,
-    index_file: File,
-}
-
-#[derive(Debug)]
 pub struct LocalBlockStorage {
     base_dir: PathBuf,
-    current_block: Option<Mutex<BlockReference>>,
 }
 
 impl LocalBlockStorage {
     pub fn new<P: AsRef<Path>>(dir: P) -> Self {
         LocalBlockStorage {
             base_dir: dir.as_ref().to_path_buf(),
-            current_block: None,
         }
     }
 
@@ -372,6 +364,27 @@ impl BlockStorage for LocalBlockStorage {
         }
 
         Ok(block_index)
+    }
+
+    fn read_block_meta(&self, block_id: &BlockId) -> BlockStorageResult<BlockMeta> {
+        let block_path = self
+            .base_dir
+            .join(BLOCKS_DIR_NAME)
+            .join(block_id.id.to_string())
+            .join(META_FILE_NAME);
+
+        if !block_path.exists() {
+            return Err(StorageError::NotFound(
+                format!("Block {} doesn't exist", block_id.id.to_string()).into(),
+            ));
+        }
+
+        let meta_file = File::open(&block_path)?;
+        let reader = BufReader::new(meta_file);
+        let meta: BlockMeta = serde_json::from_reader(reader)
+            .map_err(|e| StorageError::CorruptedEntry(format!("Can not open block meta file: {}", e.to_string())))?;
+
+        Ok(meta)
     }
 
     fn read_bloom_filter(&self, block_id: &BlockId) -> BlockStorageResult<BloomFilterBlock> {

@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use crate::block::{BloomFilterBlock, DataBlock};
 use crate::errors::StorageError;
 use crate::memtable::{Memtable};
@@ -6,6 +7,7 @@ use log::{info, trace};
 use std::time::Instant;
 use metrics::metrics;
 use crate::bloom::bloom_filter::{BloomFilter, BloomFilterImpl};
+use crate::index::service_name_index::ServiceNameIndex;
 
 pub trait FlushWorker: Send + Sync {
 
@@ -19,13 +21,15 @@ pub enum FlushResult {
 
 pub struct DiskFlushWorker {
     table_writer: SStableWriterImpl,
+    service_name_index: Arc<ServiceNameIndex>,
     max_block_size: usize,
 }
 
 impl DiskFlushWorker {
-    pub fn new(table_writer: SStableWriterImpl, max_block_size: usize) -> Self {
+    pub fn new(table_writer: SStableWriterImpl, service_name_index: Arc<ServiceNameIndex>, max_block_size: usize) -> Self {
         Self {
             table_writer,
+            service_name_index,
             max_block_size,
         }
     }
@@ -45,6 +49,7 @@ impl DiskFlushWorker {
 
         let bloom_filter_block = BloomFilterBlock::from_bloom_filter(bloom_filter);
         self.table_writer.flush_bloom_filter(&block_meta, bloom_filter_block)?;
+        self.service_name_index.flush()?;
         Ok(())
     }
 }
@@ -56,15 +61,11 @@ impl FlushWorker for DiskFlushWorker {
         let flush_start_time = Instant::now();
         let entries = memtable.entries();
 
-        // for spans in grouped.values_mut() {
-        //     spans.sort_by_key(|s| s.timestamp);
-        // }
-
         let mut current_block = DataBlock::new(self.max_block_size);
         let mut  min_ts = u64::MAX;
         let mut max_ts = u64::MIN;
 
-        for (trace_key, entry)  in entries {
+        for (_trace_key, entry)  in entries {
             let trace_id = entry.trace_id();
             let spans = entry.get_spans();
             trace!(
@@ -87,8 +88,8 @@ impl FlushWorker for DiskFlushWorker {
                 self.flush_block(current_block)?;
 
                 current_block = DataBlock::new(self.max_block_size);
-                min_ts = 0;
-                max_ts = 0;
+                min_ts = u64::MAX;
+                max_ts = u64::MIN;
             }
         }
 

@@ -132,7 +132,7 @@ mod tests {
         bv.set_bit(bit_index);
         let (segment, position) = get_bit_coordinates(bit_index);
         let byte = bv.vector[segment as usize];
-        ;
+        
         assert_eq!((byte >> position) & 1, 1);
     }
 

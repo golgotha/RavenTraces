@@ -3,7 +3,7 @@ use std::path::{Path};
 use std::sync::Arc;
 use common::binary_readers::{read_n_bytes, read_u32};
 use common::serialization::Readable;
-use crate::block::{BlockEntry, BlockId, DataBlock, DataBlockBuilder, StorageMeta};
+use crate::block::{BlockEntry, BlockId, BlockMeta, DataBlock, DataBlockBuilder, StorageMeta};
 use crate::block_index::BlockIndex;
 use crate::block_storage::{BlockStorage, LocalBlockStorage};
 use crate::bloom::bloom_filter::BloomFilterImpl;
@@ -23,6 +23,8 @@ pub trait SStableReader {
     fn read_block_iter(&self, block_id: &BlockId, offset: u64) -> BlockIteratorResult;
 
     fn read_block_index(&self, block_id: &BlockId) -> Result<BlockIndex, StorageError>;
+
+    fn read_block_meta(&self, block_id: &BlockId) -> Result<BlockMeta, StorageError>;
     
     fn read_bloom_filter(&self, block_id: &BlockId) -> Result<BloomFilterImpl, StorageError>;
 
@@ -136,6 +138,10 @@ impl SStableReader for SStableReaderImpl {
 
     fn read_block_index(&self, block_id: &BlockId) -> Result<BlockIndex, StorageError> {
         self.storage.read_block_index(block_id)
+    }
+
+    fn read_block_meta(&self, block_id: &BlockId) -> Result<BlockMeta, StorageError> {
+        self.storage.read_block_meta(block_id)
     }
 
     fn read_bloom_filter(&self, block_id: &BlockId) -> Result<BloomFilterImpl, StorageError> {

@@ -179,7 +179,6 @@ mod tests {
         let mut mock_values = Vec::new();
 
         for _ in 0..13456 {
-            let id: u64 = rand::random();
             let trace_id_str= generate_trace_id();
             let mock_value = TraceId::from_str(trace_id_str.as_str()).unwrap();
             bloom_filter.add(&mock_value);

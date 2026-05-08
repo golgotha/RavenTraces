@@ -1,4 +1,5 @@
-use crate::bloom::bloom_filter::{BloomFilter, BloomFilterImpl};
+use std::collections::HashSet;
+use crate::bloom::bloom_filter::{BloomFilterImpl};
 use crate::span::{TraceId};
 use common::binary_readers::{read_bytes, read_n_bytes, read_u16, read_u32, read_u64, read_u8};
 use common::serialization::{Readable, Writable};
@@ -27,6 +28,7 @@ pub struct DataBlock {
     entries: Vec<BlockEntry>,
     block_meta: BlockMeta,
     block_index: BlockIndex,
+    services: HashSet<String>,
 }
 
 #[derive(Debug)]
@@ -58,6 +60,10 @@ pub struct BlockMeta {
 pub struct StorageMeta {
     #[serde(rename = "blocks")]
     pub blocks: Vec<String>,
+}
+
+pub struct ServicesInfo {
+    pub services: HashSet<String>
 }
 
 #[derive(Debug, Default)]
@@ -135,8 +141,6 @@ impl DataBlockBuilder {
     pub fn build(self) -> DataBlock {
         let block_id = self.id.unwrap();
         let entries = self.entries;
-        let min_ts = u64::MAX;
-        let max_ts = 0;
         let block_meta = self.block_meta.unwrap_or(BlockMeta::new(2));
 
         DataBlock {
@@ -145,6 +149,7 @@ impl DataBlockBuilder {
             entries,
             block_meta,
             block_index: BlockIndex::new(),
+            services: HashSet::new(),
         }
     }
 }
@@ -265,6 +270,7 @@ impl DataBlock {
             entries: Vec::new(),
             block_meta,
             block_index: BlockIndex::new(),
+            services: HashSet::new(),
         }
     }
 
@@ -294,7 +300,11 @@ impl DataBlock {
         let index_entry = create_block_entry(trace_id, self.block_offset as u64, spans_block_size as u32)
             .expect("Error while building index entry");
         self.block_index.insert(index_entry);
-        
+        self.block_offset += spans_block_size;
+    }
+    
+    pub fn add_services(&mut self, service: String) {
+        self.services.insert(service.to_string());
     }
 
     pub fn id(&self) -> &BlockId {

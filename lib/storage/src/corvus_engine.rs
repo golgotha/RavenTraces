@@ -1,23 +1,22 @@
 use crate::errors::EngineError;
+use crate::flush_service::FlushService;
 use crate::flush_worker::{DiskFlushWorker, FlushWorker};
+use crate::index::service_name_index::ServiceNameIndex;
 use crate::memtable::Memtable;
-use crate::span::{Span, TraceId};
+use crate::search_request::SearchRequest;
+use crate::span::{AttributeValue, SERVICE_NAME_ATTRIBUTE, Span, TraceId};
 use crate::sstable_writer::SStableWriterImpl;
+use crate::types::{MemtableConfig, StorageConfig};
+use log::{error, info};
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use log::{error, info};
-use serde::{Deserialize};
-use wal::errors::WalError;
-use wal::log_entry::{LogEntry, LogEntryPointer};
-use wal::wal::{WAL};
-use crate::flush_service::FlushService;
-use crate::search_request::SearchRequest;
-use crate::types::{MemtableConfig, StorageConfig};
+use wal::log_entry::LogEntry;
+use wal::wal::WAL;
 
 pub trait CorvusEngine: Send + Sync {
-
     fn start(&self);
 
     fn append(&self, spans: Vec<Span>) -> Result<(), EngineError>;
@@ -28,25 +27,25 @@ pub trait CorvusEngine: Send + Sync {
 
     fn fetch_by_time(&self, start_ts: u64, end_ts: u64) -> Vec<Span>;
 
-    fn fetch_trace(&self, trace_id:&TraceId) -> Vec<Span>;
+    fn fetch_trace(&self, trace_id: &TraceId) -> Vec<Span>;
 
     fn fetch_services(&self) -> Vec<String>;
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CorvusEngineConfig {
-    pub mem_table_config: MemtableConfig
+    pub mem_table_config: MemtableConfig,
 }
 
 pub struct CorvusEngineImpl {
     wal: Arc<Mutex<WAL>>,
     active_mem_table: Arc<Mutex<Memtable>>,
     config: CorvusEngineConfig,
-    flush_service: FlushService
+    flush_service: FlushService,
+    service_name_index: Arc<ServiceNameIndex>,
 }
 
-impl CorvusEngineImpl {
-}
+impl CorvusEngineImpl {}
 
 impl CorvusEngineImpl {
     pub fn new(base_dir: PathBuf, mem_table: Arc<Mutex<Memtable>>, config: StorageConfig) -> Self {
@@ -54,24 +53,33 @@ impl CorvusEngineImpl {
         let max_block_size = config.max_block_size.clone();
 
         let wal_dir_path = Path::new(&base_dir);
-        let wal = WAL::open(wal_dir_path).
-            expect("could not open traces.wal");
+        let wal = WAL::open(wal_dir_path).expect("could not open traces.wal");
 
         let wal = Arc::new(Mutex::new(wal));
 
         let stable_writer = SStableWriterImpl::new(Path::new(&base_dir).to_path_buf());
-        let flush_worker = Box::new(DiskFlushWorker::new(stable_writer, max_block_size));
-        let flush_worker: Arc<Mutex<Box<dyn FlushWorker + Send + Sync>>> = Arc::new(Mutex::new(flush_worker));
+        let service_name_index = Arc::new(
+            ServiceNameIndex::load_or_create(&base_dir)
+                .expect("could not create service name index"),
+        );
+
+        let flush_worker = Box::new(DiskFlushWorker::new(
+            stable_writer,
+            Arc::clone(&service_name_index),
+            max_block_size,
+        ));
+        
+        let flush_worker: Arc<Mutex<Box<dyn FlushWorker + Send + Sync>>> =
+            Arc::new(Mutex::new(flush_worker));
 
         let flush_service = FlushService::new(Arc::clone(&wal), flush_worker);
 
         let engine = Self {
             wal,
             active_mem_table: mem_table,
-            config: CorvusEngineConfig {
-                mem_table_config
-            },
-            flush_service
+            config: CorvusEngineConfig { mem_table_config },
+            flush_service,
+            service_name_index,
         };
 
         engine
@@ -88,24 +96,23 @@ impl CorvusEngineImpl {
                 };
 
                 info!(
-                "spans = {}, trace_ids = {}, time_keys = {}, services = {}, trace_refs = {}, time_refs = {}, service_refs = {}, spans_mb = {}, total_estimated_size_mb = {}",
-                stats.spans_len,
-                stats.trace_ids,
-                stats.time_index_keys,
-                stats.service_keys,
-                stats.trace_ids_refs,
-                stats.time_index_refs,
-                stats.service_index_refs,
-                stats.span_size_bytes / 1024 / 1024,
-                stats.total_estimated_size_bytes / 1024 / 1024
-            );
+                    "spans = {}, trace_ids = {}, time_keys = {}, services = {}, trace_refs = {}, time_refs = {}, service_refs = {}, spans_mb = {}, total_estimated_size_mb = {}",
+                    stats.spans_len,
+                    stats.trace_ids,
+                    stats.time_index_keys,
+                    stats.service_keys,
+                    stats.trace_ids_refs,
+                    stats.time_index_refs,
+                    stats.service_index_refs,
+                    stats.span_size_bytes / 1024 / 1024,
+                    stats.total_estimated_size_bytes / 1024 / 1024
+                );
             }
         });
     }
 }
 
 impl CorvusEngine for CorvusEngineImpl {
-
     fn start(&self) {
         let mut wal = self.wal.lock().unwrap();
         let mut mem_table = self.active_mem_table.lock().unwrap();
@@ -114,7 +121,6 @@ impl CorvusEngine for CorvusEngineImpl {
     }
 
     fn append(&self, spans: Vec<Span>) -> Result<(), EngineError> {
-
         {
             let mut wal = self.wal.lock().unwrap();
             let mut mem_table = self.active_mem_table.lock().unwrap();
@@ -125,6 +131,15 @@ impl CorvusEngine for CorvusEngineImpl {
                 match wal.append(log_entry) {
                     Ok(_) => {
                         let trace_id = span.trace_id;
+
+                        if let Some(service_name) = span
+                            .attributes
+                            .get(SERVICE_NAME_ATTRIBUTE)
+                            .and_then(AttributeValue::as_str)
+                        {
+                            self.service_name_index.add(service_name);
+                        }
+
                         mem_table.insert(&trace_id, span);
                     }
                     Err(error) => {
@@ -141,9 +156,9 @@ impl CorvusEngine for CorvusEngineImpl {
                     return Ok(());
                 }
 
-
                 let mut wal = self.wal.lock().unwrap();
-                let checkpoint = wal.rotate_segment()
+                let checkpoint = wal
+                    .rotate_segment()
                     .map_err(|e| EngineError::EngineError(e.to_string()))?;
 
                 let next_memtable = mem_table.next_generation();
@@ -159,13 +174,12 @@ impl CorvusEngine for CorvusEngineImpl {
 
     fn replay_wal(&self, wal: &mut WAL, mem_table: &mut Memtable) {
         info!("Replaying WAL, it takes a while");
-        let entries = wal.replay()
-            .expect("Error while replaying WAL");
+        let entries = wal.replay().expect("Error while replaying WAL");
 
         let mut entries_count = 0;
         for entry in entries {
             let pointer = match entry {
-                Ok(pointer) => {pointer}
+                Ok(pointer) => pointer,
                 Err(e) => {
                     error!("Error while reading WAL entry: {}", e.to_string());
                     continue;
@@ -190,13 +204,13 @@ impl CorvusEngine for CorvusEngineImpl {
 
         let spans = match service_name {
             Some(service_name) => mem_table.get_spans_by_service(service_name, limit),
-            None =>  mem_table
+            None => mem_table
                 .entries()
                 .iter()
                 .flat_map(|(_trace_id, entry)| entry.get_spans().iter())
                 .map(|span| Span::deserialize(span))
                 .take(limit)
-                .collect()
+                .collect(),
         };
 
         let spans = spans
@@ -216,13 +230,13 @@ impl CorvusEngine for CorvusEngineImpl {
         spans
     }
 
-    fn fetch_trace(&self, trace_id:&TraceId) -> Vec<Span> {
+    fn fetch_trace(&self, trace_id: &TraceId) -> Vec<Span> {
         let mem_table = self.active_mem_table.lock().unwrap();
         mem_table.get_index(trace_id)
     }
 
     fn fetch_services(&self) -> Vec<String> {
-        let mem_table = self.active_mem_table.lock().unwrap();
-        mem_table.services()
+        let services = self.service_name_index.list();
+        services
     }
 }

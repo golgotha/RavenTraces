@@ -79,7 +79,8 @@ impl TraceQuerier {
     }
 
     pub fn get_services(&self) -> Vec<String> {
-        self.corvus_engine.fetch_services()
+        let services = self.corvus_engine.fetch_services();
+        services
     }
 
     pub fn search(&self, search_request: SearchRequest) -> Result<Vec<Span>, StorageError> {

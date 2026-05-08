@@ -1,18 +1,19 @@
 #[cfg(test)]
 mod tests {
+    use common::binary_readers::{read_n_bytes, read_u32};
     use std::collections::HashMap;
     use std::fs;
     use std::path::Path;
-    use tempfile::TempDir;
-    use common::binary_readers::{read_n_bytes, read_u32};
+    use std::sync::Arc;
     use storage::block_storage::{BlockStorage, LocalBlockStorage};
     use storage::bloom::bloom_filter::BloomFilter;
     use storage::flush_worker::{DiskFlushWorker, FlushWorker};
+    use storage::index::service_name_index::ServiceNameIndex;
     use storage::memtable::Memtable;
     use storage::span::{AttributeValue, Span, SpanId, SpanKind, TraceId};
     use storage::sstable_writer::SStableWriterImpl;
     use storage::types::MemtableConfig;
-    use wal::wal::WAL;
+    use tempfile::TempDir;
 
     const TOTAL_TRACES: usize = 100;
 
@@ -43,7 +44,7 @@ mod tests {
         let mut memtable = Memtable::new(config, 1);
         let mut traces: Vec<TraceId> = Vec::new();
 
-        for i in 0..TOTAL_TRACES {
+        for _ in 0..TOTAL_TRACES {
             let trace_id  = TraceId::from_str(generate_trace_id().as_str()).unwrap();
             let span_id = SpanId::from_str(generate_span_id().as_str()).unwrap();
             let span = make_span(trace_id, span_id);
@@ -52,7 +53,8 @@ mod tests {
         }
 
         let table_writer = SStableWriterImpl::new(dir_path.to_path_buf());
-        let mut flusher = DiskFlushWorker::new(table_writer, 64 * 1024);
+        let service_name_index =  Arc::new(ServiceNameIndex::load_or_create(&dir_path).unwrap());
+        let mut flusher = DiskFlushWorker::new(table_writer, service_name_index, 64 * 1024);
         let flusher_result = flusher.flush(memtable);
         assert!(flusher_result.is_ok());
 

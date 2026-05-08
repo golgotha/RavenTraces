@@ -124,7 +124,7 @@ impl Memtable {
         metrics::MEMTABLE_READS.inc();
         self.time_index
             .range(Microseconds::from_millis(start)..=Microseconds::from_millis(end))
-            .flat_map(|((_, keys))| keys.iter())
+            .flat_map(|(_, keys)| keys.iter())
             .filter_map(|key| self.traces.get(key))
             .flat_map(|entry| entry.spans.iter())
             .map(|span| Span::deserialize(span))

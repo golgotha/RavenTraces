@@ -20,4 +20,15 @@ impl SearchRequest {
             lookback: None,
         }
     }
+
+    pub fn for_service_name(service_name: &String) -> SearchRequest {
+        SearchRequest {
+            trace_id: None,
+            service_name: Some(service_name.clone()),
+            span_name: None,
+            limit: None,
+            end_ts: None,
+            lookback: None,
+        }
+    }
 }

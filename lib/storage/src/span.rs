@@ -9,6 +9,8 @@ use common::serialization::Writable;
 use crate::readers::status_code_reader::read_status_code;
 use crate::readers::status_message_reader::read_status_message;
 
+pub const SERVICE_NAME_ATTRIBUTE: &str = "service.name";
+
 #[derive(Debug)]
 pub enum TypeError {
     InvalidTraceId(String),
