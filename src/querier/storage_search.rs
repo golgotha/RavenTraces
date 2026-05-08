@@ -163,11 +163,11 @@ impl SpanNameSearchResultAggregator {
 }
 
 impl SearchResultAggregator for SpanNameSearchResultAggregator {
-    
+
     fn exceeds_limit(&self, _limit: usize) -> bool {
         false
     }
-    
+
     fn map(&mut self, span: Span) {
         self.span_names.insert(span.name);
     }

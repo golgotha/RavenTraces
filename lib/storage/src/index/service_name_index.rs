@@ -69,7 +69,7 @@ pub trait ServiceNameIndexWriter: Send + Sync {
     fn write_services(&self, services: Vec<String>) -> Result<(), StorageError>;
 }
 
-pub struct LocalServiceNameIndexReader {
+pub(crate) struct LocalServiceNameIndexReader {
     path: PathBuf,
 }
 
@@ -102,7 +102,7 @@ impl ServiceNameIndexReader for LocalServiceNameIndexReader {
     }
 }
 
-pub struct LocalServiceNameIndexWriter {
+pub(crate) struct LocalServiceNameIndexWriter {
     path: PathBuf,
 }
 

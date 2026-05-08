@@ -8,12 +8,12 @@ mod tests {
     use storage::block_storage::{BlockStorage, LocalBlockStorage};
     use storage::bloom::bloom_filter::BloomFilter;
     use storage::flush_worker::{DiskFlushWorker, FlushWorker};
-    use storage::index::service_name_index::{LocalServiceNameIndexReader, LocalServiceNameIndexWriter, ServiceNameIndex};
     use storage::memtable::Memtable;
     use storage::span::{AttributeValue, Span, SpanId, SpanKind, TraceId};
     use storage::sstable_writer::SStableWriterImpl;
     use storage::types::MemtableConfig;
     use tempfile::TempDir;
+    use storage::index::index_factory::{local_service_name_index, local_span_name_index};
 
     const TOTAL_TRACES: usize = 100;
 
@@ -54,12 +54,11 @@ mod tests {
 
         let table_writer = SStableWriterImpl::new(dir_path.to_path_buf());
 
-        let service_name_index_reader = Box::new(LocalServiceNameIndexReader::new(&dir_path));
-        let service_name_index_writer = Box::new(LocalServiceNameIndexWriter::new(&dir_path));
-        let service_name_index =  Arc::new(ServiceNameIndex::new(service_name_index_reader, service_name_index_writer));
+        let service_name_index =  Arc::new(local_service_name_index(&dir_path));
+        let span_name_index =  Arc::new(local_span_name_index(&dir_path));
         service_name_index.load_or_create().unwrap();
 
-        let mut flusher = DiskFlushWorker::new(table_writer, service_name_index, 64 * 1024);
+        let mut flusher = DiskFlushWorker::new(table_writer, service_name_index, span_name_index, 64 * 1024);
         let flusher_result = flusher.flush(memtable);
         assert!(flusher_result.is_ok());
 

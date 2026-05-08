@@ -7,7 +7,7 @@ use storage::block::BlockId;
 use storage::corvus_engine::CorvusEngine;
 use storage::errors::StorageError;
 use storage::search_request::SearchRequest;
-use storage::span::{Span, TraceId};
+use storage::span::{AttributeValue, Span, TraceId, SERVICE_NAME_ATTRIBUTE};
 use storage::sstable_reader::{SStableReader, SStableReaderImpl};
 use storage::types::StorageConfig;
 
@@ -110,9 +110,15 @@ impl TraceQuerier {
 
         Ok(spans_result)
     }
-    
+
     pub fn search_span_names(&self, search_request: SearchRequest) -> HashSet<String> {
-        self.storage_search.search_span_names(&search_request)
+        let service_name = search_request.service_name.clone();
+        if let Some(service) = service_name {
+            let spans = self.corvus_engine.fetch_spans(service);
+            spans
+        } else {
+            HashSet::new()
+        }
     }
 
     pub fn query_by_time(&self, start_ts: u64, end_ts: u64) -> Result<Vec<Span>, StorageError> {

@@ -8,6 +8,7 @@ use std::time::Instant;
 use metrics::metrics;
 use crate::bloom::bloom_filter::{BloomFilter, BloomFilterImpl};
 use crate::index::service_name_index::ServiceNameIndex;
+use crate::index::span_name_index::SpanNameIndex;
 
 pub trait FlushWorker: Send + Sync {
 
@@ -22,14 +23,16 @@ pub enum FlushResult {
 pub struct DiskFlushWorker {
     table_writer: SStableWriterImpl,
     service_name_index: Arc<ServiceNameIndex>,
+    span_name_index: Arc<SpanNameIndex>,
     max_block_size: usize,
 }
 
 impl DiskFlushWorker {
-    pub fn new(table_writer: SStableWriterImpl, service_name_index: Arc<ServiceNameIndex>, max_block_size: usize) -> Self {
+    pub fn new(table_writer: SStableWriterImpl, service_name_index: Arc<ServiceNameIndex>, span_name_index: Arc<SpanNameIndex>, max_block_size: usize) -> Self {
         Self {
             table_writer,
             service_name_index,
+            span_name_index,
             max_block_size,
         }
     }
@@ -50,6 +53,7 @@ impl DiskFlushWorker {
         let bloom_filter_block = BloomFilterBlock::from_bloom_filter(bloom_filter);
         self.table_writer.flush_bloom_filter(&block_meta, bloom_filter_block)?;
         self.service_name_index.flush()?;
+        self.span_name_index.flush()?;
         Ok(())
     }
 }

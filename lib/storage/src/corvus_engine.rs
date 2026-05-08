@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use crate::errors::EngineError;
 use crate::flush_service::FlushService;
 use crate::flush_worker::{DiskFlushWorker, FlushWorker};
@@ -18,6 +19,8 @@ use std::thread;
 use std::time::Duration;
 use wal::log_entry::LogEntry;
 use wal::wal::WAL;
+use crate::index::index_factory::{local_service_name_index, local_span_name_index};
+use crate::index::span_name_index::{Pair, SpanNameIndex};
 
 pub trait CorvusEngine: Send + Sync {
     fn start(&self);
@@ -33,6 +36,8 @@ pub trait CorvusEngine: Send + Sync {
     fn fetch_trace(&self, trace_id: &TraceId) -> Vec<Span>;
 
     fn fetch_services(&self) -> Vec<String>;
+
+    fn fetch_spans(&self, service_name: String) -> HashSet<String>;
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -46,6 +51,7 @@ pub struct CorvusEngineImpl {
     config: CorvusEngineConfig,
     flush_service: FlushService,
     service_name_index: Arc<ServiceNameIndex>,
+    span_name_index: Arc<SpanNameIndex>,
 }
 
 impl CorvusEngineImpl {}
@@ -62,18 +68,17 @@ impl CorvusEngineImpl {
 
         let stable_writer = SStableWriterImpl::new(Path::new(&base_dir).to_path_buf());
 
-        let service_name_index_reader = Box::new(LocalServiceNameIndexReader::new(&base_dir));
-        let service_name_index_writer = Box::new(LocalServiceNameIndexWriter::new(&base_dir));
-        let service_name_index = Arc::new(ServiceNameIndex::new(
-            service_name_index_reader,
-            service_name_index_writer,
-        ));
+        let service_name_index = Arc::new(local_service_name_index(&base_dir));
+        let span_name_index = Arc::new(local_span_name_index(&base_dir));
         service_name_index.load_or_create()
             .expect("could not load local service name index");
+        span_name_index.load_or_create()
+            .expect("could not load span name index");
 
         let flush_worker = Box::new(DiskFlushWorker::new(
             stable_writer,
             Arc::clone(&service_name_index),
+            Arc::clone(&span_name_index),
             max_block_size,
         ));
 
@@ -88,6 +93,7 @@ impl CorvusEngineImpl {
             config: CorvusEngineConfig { mem_table_config },
             flush_service,
             service_name_index,
+            span_name_index,
         };
 
         engine
@@ -146,6 +152,10 @@ impl CorvusEngine for CorvusEngineImpl {
                             .and_then(AttributeValue::as_str)
                         {
                             self.service_name_index.add(service_name);
+                            self.span_name_index.add(Pair {
+                                span_name: span.name.clone(),
+                                service_name: service_name.to_string(),
+                            })
                         }
 
                         mem_table.insert(&trace_id, span);
@@ -246,5 +256,9 @@ impl CorvusEngine for CorvusEngineImpl {
     fn fetch_services(&self) -> Vec<String> {
         let services = self.service_name_index.list();
         services
+    }
+
+    fn fetch_spans(&self, service_name: String) -> HashSet<String> {
+        self.span_name_index.list(service_name)
     }
 }
