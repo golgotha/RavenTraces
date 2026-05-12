@@ -29,7 +29,7 @@ pub trait CorvusEngine: Send + Sync {
 
     fn replay_wal(&self, wal: &mut WAL, mem_table: &mut Memtable);
 
-    fn search(&self, request: &SearchRequest) -> Vec<Span>;
+    fn search(&self, request: &SearchRequest) -> Box<dyn Iterator<Item = Span> + '_>;
 
     fn fetch_by_time(&self, start_ts: u64, end_ts: u64) -> Vec<Span>;
 
@@ -214,32 +214,35 @@ impl CorvusEngine for CorvusEngineImpl {
         info!("Reading {} WAL entries completed", entries_count);
     }
 
-    fn search(&self, request: &SearchRequest) -> Vec<Span> {
+    fn search(&self, request: &SearchRequest) -> Box<dyn Iterator<Item = Span> + '_> {
         let mem_table = self.active_mem_table.lock().unwrap();
-        let service_name = &request.service_name;
-        let span_name = &request.span_name;
-        let limit = request.limit.unwrap_or(usize::MAX);
+        let end_ts = request.end_ts;
 
-        let spans = match service_name {
-            Some(service_name) => mem_table.get_spans_by_service(service_name, limit),
-            None => mem_table
+        if let Some(trace_id) = &request.trace_id {
+            return Box::new(self.fetch_trace(trace_id).into_iter());
+        }
+
+        if let Some(end_ts) = end_ts {
+            let lookback = request.lookback.unwrap_or(60000);
+            let start_ts = end_ts.saturating_sub(lookback);
+            let spans = self.fetch_by_time(start_ts, end_ts);
+            return Box::new(spans.into_iter());
+        }
+
+
+        if let Some(service_name) = &request.service_name {
+            let service_spans = mem_table.get_spans_by_service(service_name)
+                .collect::<Vec<_>>();
+            return Box::new(service_spans.into_iter());
+        }
+
+        let all_spans = mem_table
                 .entries()
                 .iter()
                 .flat_map(|(_trace_id, entry)| entry.get_spans().iter())
                 .map(|span| Span::deserialize(span))
-                .take(limit)
-                .collect(),
-        };
-
-        let spans = spans
-            .into_iter()
-            .filter(|span| match &span_name {
-                Some(name) => span.name == name.as_str(),
-                None => true,
-            })
-            .collect::<Vec<Span>>();
-
-        spans
+            .collect::<Vec<_>>();
+       Box::new(all_spans.into_iter())
     }
 
     fn fetch_by_time(&self, start_ts: u64, end_ts: u64) -> Vec<Span> {
@@ -250,7 +253,7 @@ impl CorvusEngine for CorvusEngineImpl {
 
     fn fetch_trace(&self, trace_id: &TraceId) -> Vec<Span> {
         let mem_table = self.active_mem_table.lock().unwrap();
-        mem_table.get_index(trace_id)
+        mem_table.get_index(trace_id).collect()
     }
 
     fn fetch_services(&self) -> Vec<String> {

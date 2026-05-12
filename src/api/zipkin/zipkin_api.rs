@@ -60,34 +60,21 @@ async fn get_zipkin_traces(
         lookback,
     };
 
-    if let Some(end_ts) = end_ts {
-        let lookback = lookback.unwrap_or(60000);
-        let start_time = end_ts - lookback;
-        let traces = querier.search_spans_between(start_time, end_ts);
-        match traces {
-            Ok(result) => {
-                let response = Some(result);
-                HttpResponse::Ok().json(response)
+    match querier.search_traces(request) {
+        Ok(traces) => {
+            let mut traces_map: HashMap<String, Vec<ZipkinSpan>> = HashMap::new();
+            for span in traces {
+                let trace_id = span.trace_id.clone();
+                traces_map
+                    .entry(trace_id)
+                    .or_insert_with(Vec::new)
+                    .push(span);
             }
-            Err(_) => HttpResponse::NotFound().finish(),
-        }
-    } else {
-        match querier.search_traces(request) {
-            Ok(traces) => {
-                let mut traces_map: HashMap<String, Vec<ZipkinSpan>> = HashMap::new();
-                for span in traces {
-                    let trace_id = span.trace_id.clone();
-                    traces_map
-                        .entry(trace_id)
-                        .or_insert_with(Vec::new)
-                        .push(span);
-                }
 
-                let zipkin_traces: Vec<Vec<ZipkinSpan>> = traces_map.values().cloned().collect();
-                HttpResponse::Ok().json(zipkin_traces)
-            }
-            Err(_) => HttpResponse::NotFound().finish(),
+            let zipkin_traces: Vec<Vec<ZipkinSpan>> = traces_map.values().cloned().collect();
+            HttpResponse::Ok().json(zipkin_traces)
         }
+        Err(_) => HttpResponse::NotFound().finish(),
     }
 }
 

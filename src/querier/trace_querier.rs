@@ -3,6 +3,7 @@ use log::{debug, error, info};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use actix_web::guard::Guard;
 use storage::block::BlockId;
 use storage::corvus_engine::CorvusEngine;
 use storage::errors::StorageError;
@@ -85,8 +86,14 @@ impl TraceQuerier {
 
     pub fn search(&self, search_request: SearchRequest) -> Result<Vec<Span>, StorageError> {
         let mut spans_result: Vec<Span> = Vec::new();
-        let limit = search_request.limit.unwrap_or(usize::MAX);
-        let spans = self.corvus_engine.search(&search_request);
+        let limit = search_request.limit.unwrap_or(10);
+        let span_name = search_request.span_name.clone();
+        let service_name = search_request.service_name.clone();
+
+        let spans = self.corvus_engine.search(&search_request)
+            .filter(|span| matches_service(span, service_name.as_deref()))
+            .filter(|span| matches_span_name(span, span_name.as_deref()))
+            .take(limit);
 
         spans_result.extend(spans);
 
@@ -127,6 +134,13 @@ impl TraceQuerier {
     }
 }
 
+fn matches_span_name(span: &Span, span_name: Option<&str>) -> bool {
+    match span_name {
+        Some(name) => span.name == name,
+        None => true,
+    }
+}
+
 fn merge_spans(mem_table_spans: Vec<Span>, block_storage_spans: Vec<Span>) -> Vec<Span> {
     let mut merged = mem_table_spans
         .into_iter()
@@ -135,6 +149,19 @@ fn merge_spans(mem_table_spans: Vec<Span>, block_storage_spans: Vec<Span>) -> Ve
 
     merged.sort_by_key(|span| span.timestamp());
     merged
+}
+
+fn matches_service(span: &Span, service_name: Option<&str>) -> bool {
+    match service_name {
+        Some(svc) => {
+            let span_service_name = span
+                .attributes
+                .get(SERVICE_NAME_ATTRIBUTE)
+                .and_then(AttributeValue::as_str);
+            span_service_name == Some(svc)
+        },
+        None => true,
+    }
 }
 
 impl BlockRef {

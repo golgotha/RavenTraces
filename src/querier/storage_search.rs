@@ -6,8 +6,8 @@ use storage::block::{BlockId, BlockMeta};
 use storage::bloom_filter_cache::BloomCacheAccessor;
 use storage::errors::StorageError;
 use storage::search_request::SearchRequest;
-use storage::span::{AttributeValue, Span, SERVICE_NAME_ATTRIBUTE};
-use storage::sstable_reader::SStableReader;
+use storage::span::{AttributeValue, Span, TraceId, SERVICE_NAME_ATTRIBUTE};
+use storage::sstable_reader::{BlockIteratorResult, SStableReader};
 use storage::types::StorageConfig;
 
 type SearchResult<T> = Result<T, StorageError>;
@@ -67,16 +67,7 @@ impl LocalStorageSearch {
         for candidate in candidates {
             let block_id = candidate.id;
             let block_iterator = if query.trace_id.is_some() {
-                let block_index = self.storage.read_block_index(&block_id)?;
-                let Some(entry) = block_index.find_trace_id(&query.trace_id.unwrap()) else {
-                    continue;
-                };
-
-                self.storage.read_block_slice_iter(
-                    &block_id,
-                    entry.offset(),
-                    entry.length() as u64,
-                )?
+                self.find_block_spans_by_trace_id(&block_id, query)?
             } else {
                 self.storage.read_block_iter(&block_id, 0)?
             };
@@ -109,6 +100,19 @@ impl LocalStorageSearch {
         }
 
         Ok(())
+    }
+
+    fn find_block_spans_by_trace_id(&self, block_id: &BlockId, query: &SearchRequest) -> BlockIteratorResult {
+        let block_index = self.storage.read_block_index(&block_id)?;
+        let Some(entry) = block_index.find_trace_id(&query.trace_id.unwrap()) else {
+            return Ok(Box::new(std::iter::empty()));
+        };
+
+        self.storage.read_block_slice_iter(
+            &block_id,
+            entry.offset(),
+            entry.length() as u64,
+        )
     }
 }
 
